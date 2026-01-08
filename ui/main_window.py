@@ -306,6 +306,9 @@ class MainWindow(QWidget):
                 for x, y in feats.fingertips:
                     cv2.circle(vis, (x, y), 7, (0, 0, 255), -1)
             self._show_frame(vis)
+        else:
+            # 不渲染，不要 setPixmap，也不要在这里每帧 setText
+            pass
 
     def _gesture_cooldown(self, gid: str):
         for it in self.cfg.get("gesture_catalog", []):
@@ -346,6 +349,13 @@ class MainWindow(QWidget):
     def _on_preview_toggle(self, v):
         self.state.camera_preview_enabled = bool(v)
         self.cfg["general"]["show_camera_preview"] = bool(v)
+
+        if not v:
+            # 关闭预览时：清空显示，避免停留最后一帧
+            self.preview.clear()
+            # 可选：显示占位文本（不再与 setPixmap 来回闪，因为关闭状态下不会 setPixmap）
+            self.preview.setText("预览已关闭（识别仍在后台运行）")
+            self.preview.setStyleSheet("background:#111; color:#bbb;")
 
     def _on_mirror_toggle(self, v):
         self.cfg["general"]["mirror_camera"] = bool(v)

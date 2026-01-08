@@ -143,6 +143,15 @@ class GestureCatalogEditor(QDialog):
         except Exception as ex:
             QMessageBox.critical(self, "JSON错误", str(ex))
             return
+        from config.schema_runtime import validate_object, ENABLE_WHEN_SCHEMA, GESTURE_PARAMS_SCHEMA
+
+        errs = []
+        errs += validate_object(enable_when, ENABLE_WHEN_SCHEMA, path="enable_when")
+        errs += validate_object(params, GESTURE_PARAMS_SCHEMA, path="params")
+        if errs:
+            msg = "\n".join([f"{e.path}: {e.message}" for e in errs])
+            QMessageBox.critical(self, "校验失败", msg)
+            return
 
         it = {
             "id": gid,
