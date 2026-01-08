@@ -1,6 +1,5 @@
 import time
 import cv2
-import numpy as np
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QComboBox, QVBoxLayout, QHBoxLayout,
     QCheckBox, QMessageBox, QFileDialog, QDoubleSpinBox, QSpinBox
@@ -16,21 +15,24 @@ from control.mouse_worker import MouseMoveWorker
 
 from ui.osd import OSD
 from ui.binding_editor import BindingEditor
+from ui.gesture_catalog_editor import GestureCatalogEditor
+from ui.action_catalog_viewer import ActionCatalogViewer
+from ui.glove_calibration import GloveCalibrationDialog
 
 from vision.camera import CameraThread
 from vision.bare_mediapipe import BareHandTracker
 from vision.gesture_engine import GestureEngine
+from vision.glove_tracker_c import GloveTrackerC
 
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("手势控制中心（MVP）")
-        self.resize(1100, 760)
+        self.setWindowTitle("手势控制中心")
+        self.resize(1180, 800)
 
         self.cfg = load_config(DEFAULT_CONFIG_PATH)
         g = self.cfg["general"]
 
-        # State
         self.state = SystemState(
             recognition_enabled=bool(g.get("recognition_enabled", True)),
             execution_enabled=bool(g.get("execution_enabled", True)),
@@ -42,10 +44,11 @@ class MainWindow(QWidget):
         self.preview = QLabel("预览")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setStyleSheet("background:#111; color:#bbb;")
-        self.preview.setMinimumHeight(500)
+        self.preview.setMinimumHeight(520)
 
         self.mode_box = QComboBox()
-        self.mode_box.addItems(["bare"])  # MVP 先裸手，后续加 glove
+        self.mode_box.addItems(["bare", "glove"])
+
         self.preview_toggle = QCheckBox("显示摄像")
         self.preview_toggle.setChecked(self.state.camera_preview_enabled)
         self.mirror_toggle = QCheckBox("镜像")
@@ -74,7 +77,11 @@ class MainWindow(QWidget):
         self.spin_dead.setRange(0, 20)
         self.spin_dead.setValue(int(g.get("mouse_deadzone_px", 2)))
 
-        self.btn_bindings = QPushButton("编辑绑定…")
+        self.btn_gestures = QPushButton("手势字典…")
+        self.btn_actions = QPushButton("动作字典…")
+        self.btn_bindings = QPushButton("绑定编辑…")
+        self.btn_glove_calib = QPushButton("手套校准…")
+
         self.btn_load = QPushButton("加载配置…")
         self.btn_save = QPushButton("保存配置")
 
@@ -90,7 +97,10 @@ class MainWindow(QWidget):
         top.addWidget(self.exec_toggle)
         top.addWidget(self.mouse_move_output_toggle)
         top.addStretch(1)
+        top.addWidget(self.btn_gestures)
+        top.addWidget(self.btn_actions)
         top.addWidget(self.btn_bindings)
+        top.addWidget(self.btn_glove_calib)
         top.addWidget(self.btn_load)
         top.addWidget(self.btn_save)
 
@@ -109,7 +119,7 @@ class MainWindow(QWidget):
         layout.addWidget(self.preview)
         self.setLayout(layout)
 
-        # Components
+        # components
         self.osd = OSD()
         self.dispatcher = Dispatcher(self.cfg, self.state)
 
@@ -122,9 +132,20 @@ class MainWindow(QWidget):
         self.mouse_worker.start()
 
         self.tracker = BareHandTracker(min_det=0.6, min_track=0.6)
+        glove_cfg = self.cfg.get("glove", {})
+        self.glove = GloveTrackerC(
+            hsv_lower=tuple(glove_cfg.get("hsv_lower", [20,80,80])),
+            hsv_upper=tuple(glove_cfg.get("hsv_upper", [40,255,255])),
+            erode=int(glove_cfg.get("erode", 1)),
+            dilate=int(glove_cfg.get("dilate", 2)),
+            min_area=int(glove_cfg.get("min_area", 1500))
+        )
+
         self.engine = GestureEngine(self.cfg)
 
-        # Camera
+        self._glove_dialog = None
+
+        # camera
         self.cam = CameraThread(
             index=int(g.get("camera_index", 0)),
             width=int(g.get("camera_width", 640)),
@@ -136,7 +157,7 @@ class MainWindow(QWidget):
         self.cam.frame_signal.connect(self._on_camera_frame)
         self.cam.start()
 
-        # Timers: render + infer
+        # timers
         self.ui_fps = int(g.get("ui_fps", 24))
         self.infer_fps = int(g.get("infer_fps", 12))
         self._last_infer_ms = 0
@@ -146,7 +167,13 @@ class MainWindow(QWidget):
         self.timer.timeout.connect(self._tick)
         self.timer.start()
 
-        # Events
+        # cache
+        self._last_lm = None
+        self._last_glove_feats = None
+        self._last_raw_static = None
+        self._last_scroll = None
+
+        # events
         self.preview_toggle.toggled.connect(self._on_preview_toggle)
         self.mirror_toggle.toggled.connect(self._on_mirror_toggle)
         self.osd_toggle.toggled.connect(self._on_osd_toggle)
@@ -159,15 +186,12 @@ class MainWindow(QWidget):
         self.spin_dead.valueChanged.connect(self._on_mouse_params)
 
         self.btn_bindings.clicked.connect(self._open_bindings)
+        self.btn_gestures.clicked.connect(self._open_gestures)
+        self.btn_actions.clicked.connect(self._open_actions)
+        self.btn_glove_calib.clicked.connect(self._open_glove_calib)
+
         self.btn_load.clicked.connect(self._load_config_dialog)
         self.btn_save.clicked.connect(self._save_config)
-
-        # cache last results (avoid flicker)
-        self._last_lm = None
-        self._last_static_raw = None
-        self._last_scroll = None
-        self._last_event = None
-        self._last_action = None
 
     def closeEvent(self, e):
         self.cam.stop()
@@ -177,6 +201,8 @@ class MainWindow(QWidget):
 
     def _on_camera_frame(self, frame):
         self._latest_frame = frame
+        if self._glove_dialog is not None and self._glove_dialog.isVisible():
+            self._glove_dialog.update_frame(frame)
 
     def _tick(self):
         if self._latest_frame is None:
@@ -187,10 +213,11 @@ class MainWindow(QWidget):
         now_ms = int(time.time() * 1000)
         do_infer = self.state.recognition_enabled and (now_ms - self._last_infer_ms >= int(1000 / max(5, self.infer_fps)))
 
-        lm = self._last_lm
-        raw_static = self._last_static_raw
-        scroll = self._last_scroll
         event = None
+        raw_static = self._last_raw_static
+        scroll = self._last_scroll
+
+        mode = self.mode_box.currentText()
 
         if do_infer:
             self._last_infer_ms = now_ms
@@ -201,70 +228,92 @@ class MainWindow(QWidget):
                 infer = frame
                 scale = 1.0
 
-            lm2 = self.tracker.process(infer)
-            if lm2 is not None and scale != 1.0:
-                lm2 = lm2 / scale
+            if mode == "bare":
+                lm2 = self.tracker.process(infer)
+                if lm2 is not None and scale != 1.0:
+                    lm2 = lm2 / scale
+                self._last_lm = lm2
+                self._last_glove_feats = None
 
-            lm = lm2
-            event, raw_static, scroll = self.engine.update_bare(lm, self.state)
-            self._last_lm = lm
-            self._last_static_raw = raw_static
-            self._last_scroll = scroll
-            self._last_event = event
+                event, raw_static, scroll = self.engine.update_bare(lm2, self.state)
 
-        # 鼠标移动：只在 mouse_move_mode + 执行ON + 输出ON + 有lm 时输出
-        if (self.state.recognition_enabled and self.state.execution_enabled and
-            self.state.mouse_move_output_enabled and self.state.mouse_move_mode and lm is not None):
-            ix, iy = float(lm[8][0]), float(lm[8][1])
-            tgt = self.mouse.compute_target(ix, iy, frame_w=w, frame_h=h)
-            if tgt is not None:
-                self.mouse_worker.set_target(tgt[0], tgt[1])
             else:
-                # 没有有效目标不必invalidate（保留上次也行）；这里选择不强制
-                pass
+                # glove mode
+                feats = self.glove.process(infer)
+                # scale back coords to full frame
+                if scale != 1.0 and feats.center is not None:
+                    feats.center = (int(feats.center[0] / scale), int(feats.center[1] / scale))
+                    feats.fingertips = [(int(x/scale), int(y/scale)) for x, y in feats.fingertips]
+                self._last_glove_feats = feats
+                self._last_lm = None
+
+                event, raw_static, scroll = self.engine.update_glove(feats, self.state)
+
+            self._last_raw_static = raw_static
+            self._last_scroll = scroll
+
+        # 鼠标移动输出（根据 state.mouse_move_mode）
+        can_move = (self.state.recognition_enabled and self.state.execution_enabled and
+                    self.state.mouse_move_output_enabled and self.state.mouse_move_mode)
+
+        if can_move:
+            if mode == "bare" and self._last_lm is not None:
+                x, y = float(self._last_lm[8][0]), float(self._last_lm[8][1])
+                tgt = self.mouse.compute_target(x, y, frame_w=w, frame_h=h)
+                if tgt:
+                    self.mouse_worker.set_target(tgt[0], tgt[1])
+            elif mode == "glove" and self._last_glove_feats is not None and self._last_glove_feats.center is not None:
+                cx, cy = self._last_glove_feats.center
+                tgt = self.mouse.compute_target(float(cx), float(cy), frame_w=w, frame_h=h)
+                if tgt:
+                    self.mouse_worker.set_target(tgt[0], tgt[1])
         else:
             self.mouse_worker.invalidate()
 
-        # 连续比例滚动：scroll={"sv":..,"sh":..}
-        if self.state.recognition_enabled and scroll and self.state.execution_enabled:
+        # 连续比例滚动
+        if self.state.recognition_enabled and self.state.execution_enabled and scroll:
             sv = int(scroll.get("sv", 0))
             sh = int(scroll.get("sh", 0))
+            from control.actions import do_action
             if sv != 0:
-                # 纵向滚动
-                from control.actions import do_action
                 do_action({"type": "scroll_v", "amount": sv}, self.state)
             if sh != 0:
-                from control.actions import do_action
                 do_action({"type": "scroll_h_shiftwheel", "amount": sh}, self.state)
 
-        # 离散事件：走绑定系统
+        # 离散事件 -> 绑定执行
         if event:
             cd = int(self._gesture_cooldown(event))
             action = self.dispatcher.dispatch(event, cooldown_ms=cd)
-            self._last_action = action
             if self.cfg["general"].get("osd_enabled", True) and self.osd_toggle.isChecked():
-                self._show_osd(event, action)
+                self._show_osd(mode, event, action)
 
-        # 预览渲染
+            # 如果是 THUMBS_UP 且绑定了 toggle_recognition，需要同步 UI checkbox
+            if event == "THUMBS_UP":
+                self.recog_toggle.blockSignals(True)
+                self.recog_toggle.setChecked(self.state.recognition_enabled)
+                self.recog_toggle.blockSignals(False)
+
+        # 预览
         if self.state.camera_preview_enabled:
-            vis = frame  # 不 copy，减少CPU
-            # 可选：简单标记（少画）
-            if lm is not None:
-                p = lm[8].astype(int)
+            vis = frame
+            if mode == "bare" and self._last_lm is not None:
+                p = self._last_lm[8].astype(int)
                 cv2.circle(vis, (p[0], p[1]), 6, (255, 0, 255), -1)
+            if mode == "glove" and self._last_glove_feats is not None:
+                feats = self._last_glove_feats
+                if feats.center:
+                    cv2.circle(vis, feats.center, 7, (255, 255, 0), -1)
+                for x, y in feats.fingertips:
+                    cv2.circle(vis, (x, y), 7, (0, 0, 255), -1)
             self._show_frame(vis)
-        else:
-            # 不 setText，避免 setPixmap/setText 来回导致闪烁
-            pass
 
     def _gesture_cooldown(self, gid: str):
-        # gesture_catalog params 优先，否则 general.cooldown
         for it in self.cfg.get("gesture_catalog", []):
             if it.get("id") == gid:
                 return it.get("params", {}).get("cooldown_ms", self.cfg["general"].get("cooldown_ms", 450))
         return self.cfg["general"].get("cooldown_ms", 450)
 
-    def _show_osd(self, gesture_id: str, action: dict):
+    def _show_osd(self, mode: str, gesture_id: str, action: dict):
         if action is None:
             act = "无动作"
         elif action.get("type") == "blocked_execution":
@@ -273,9 +322,10 @@ class MainWindow(QWidget):
             act = action.get("type", "动作")
 
         text = (
-            f"识别:{'ON' if self.state.recognition_enabled else 'OFF'}  "
-            f"执行:{'ON' if self.state.execution_enabled else 'OFF'}  "
-            f"移动输出:{'ON' if self.state.mouse_move_output_enabled else 'OFF'}  "
+            f"模式:{mode} 识别:{'ON' if self.state.recognition_enabled else 'OFF'} "
+            f"执行:{'ON' if self.state.execution_enabled else 'OFF'} "
+            f"预览:{'ON' if self.state.camera_preview_enabled else 'OFF'} "
+            f"移动输出:{'ON' if self.state.mouse_move_output_enabled else 'OFF'} "
             f"移动模式:{'ON' if self.state.mouse_move_mode else 'OFF'}\n"
             f"手势:{gesture_id}  动作:{act}"
         )
@@ -292,7 +342,7 @@ class MainWindow(QWidget):
             Qt.TransformationMode.FastTransformation
         ))
 
-    # --- UI toggles ---
+    # UI actions
     def _on_preview_toggle(self, v):
         self.state.camera_preview_enabled = bool(v)
         self.cfg["general"]["show_camera_preview"] = bool(v)
@@ -337,12 +387,31 @@ class MainWindow(QWidget):
         dlg = BindingEditor(self.cfg, parent=self)
         dlg.exec()
 
+    def _open_gestures(self):
+        dlg = GestureCatalogEditor(self.cfg, parent=self)
+        dlg.exec()
+
+    def _open_actions(self):
+        dlg = ActionCatalogViewer(self.cfg, parent=self)
+        dlg.exec()
+
+    def _open_glove_calib(self):
+        if self._glove_dialog is None:
+            self._glove_dialog = GloveCalibrationDialog(self.cfg, parent=self)
+        self._glove_dialog.show()
+        self._glove_dialog.raise_()
+
     def _load_config_dialog(self):
         path, _ = QFileDialog.getOpenFileName(self, "加载配置", "", "JSON (*.json)")
         if not path:
             return
         try:
             self.cfg = load_config(path)
+            # 重新注入 cfg
+            self.dispatcher = Dispatcher(self.cfg, self.state)
+            self.engine = GestureEngine(self.cfg)
+            glove_cfg = self.cfg.get("glove", {})
+            self.glove.update_hsv(glove_cfg.get("hsv_lower", [20,80,80]), glove_cfg.get("hsv_upper", [40,255,255]))
             QMessageBox.information(self, "加载成功", path)
         except Exception as ex:
             QMessageBox.critical(self, "加载失败", str(ex))
