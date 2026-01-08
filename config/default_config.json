@@ -174,7 +174,9 @@
         "global": {
             "THUMBS_UP": {"type": "toggle_recognition"},
             "SWIPE_LEFT": {"type": "hotkey", "keys": ["alt", "left"]},
-            "SWIPE_RIGHT": {"type": "hotkey", "keys": ["alt", "right"]}
+            "SWIPE_RIGHT": {"type": "hotkey", "keys": ["alt", "right"]},
+            "PINCH_RIGHT_CLICK": {"type": "click_right"},
+            "INDEX_MIDDLE_DOUBLE_CLICK": {"type": "double_click_left"}
         },
         "per_app": {
             "POWERPNT.EXE": {
