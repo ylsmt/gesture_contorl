@@ -96,26 +96,28 @@ def create_from_template():
     """使用预定义的模板创建项目结构"""
     structure_text = """
 app.py
+requirements.txt
+config/
+  default_config.json
+  schema_notes.md
+config_io.py
 ui/
   main_window.py
   osd.py
+  binding_editor.py
 vision/
   camera.py
-  hand_bare_mediapipe.py
-  hand_glove_seg.py
-  gestures_static.py
-  gestures_dynamic.py
+  bare_mediapipe.py
+  gesture_primitives.py
+  gesture_engine.py
+  scroll_state.py
 control/
-  actions.py
-  app_context.py
+  state.py
   dispatcher.py
-config/
-  default_config.json
-  schema.json
-assets/
-  glove_calibration.png
-requirements.txt
-README.md"""
+  actions.py
+  mouse_controller.py
+  mouse_worker.py
+  app_context.py"""
 
     return structure_text
 

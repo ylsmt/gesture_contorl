@@ -1,0 +1,23 @@
+app.py
+requirements.txt
+config/
+  default_config.json
+  schema_notes.md
+config_io.py
+ui/
+  main_window.py
+  osd.py
+  binding_editor.py
+vision/
+  camera.py
+  bare_mediapipe.py
+  gesture_primitives.py
+  gesture_engine.py
+  scroll_state.py
+control/
+  state.py
+  dispatcher.py
+  actions.py
+  mouse_controller.py
+  mouse_worker.py
+  app_context.py
