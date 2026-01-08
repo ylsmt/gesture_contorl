@@ -35,7 +35,9 @@ DEFAULT_CONFIG = {
 
     "scroll_gain": 1.6,
     "scroll_deadzone_px": 6,
-    "scroll_max_step": 120
+    "scroll_max_step": 120,
+    "dynamic_window_ms": 450,
+    "swipe_thresh_px": 120
   },
 
   "gesture_catalog": [

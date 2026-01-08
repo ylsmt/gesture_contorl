@@ -1,4 +1,11 @@
 {
+    "glove": {
+        "hsv_lower": [20, 80, 80],
+        "hsv_upper": [40, 255, 255],
+        "erode": 1,
+        "dilate": 2,
+        "min_area": 1500
+    },
     "general": {
         "camera_index": 0,
         "camera_width": 640,
