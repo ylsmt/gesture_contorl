@@ -16,12 +16,14 @@ class GestureEngine:
     - 复合（边沿触发一次）：
         PINCH_RIGHT_CLICK：thumb+middle pinch（两指捏合）
         INDEX_MIDDLE_DOUBLE_CLICK：index+middle close（两指并拢）
+      click门控：
+        * pinch/close 必须持续 N 帧（click_hold_frames）
+        * 平均速度必须低于阈值（click_max_speed_px_per_s）
+        * 移动明显（path_length>click_guard_move_px）时屏蔽 click
     - 状态滚动：
         PINCH_SCROLL：thumb+index pinch -> 位移比例滚动（sv/sh）
     - 取消三指捏合：thumb-index pinch 与 thumb-middle pinch 同时成立时，屏蔽复合/滚动/双击
     - 动态：SWIPE_*
-    - 冲突优化：
-        若轨迹窗口移动明显（path_length > click_guard_move_px），屏蔽 click 类（右键/双击）
     """
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -37,6 +39,10 @@ class GestureEngine:
         # edge trigger states
         self._pinch_middle_down = False
         self._index_middle_close_down = False
+
+        # hold counters (持续N帧门控)
+        self._pinch_middle_hold = 0
+        self._index_middle_close_hold = 0
 
     def _now_ms(self):
         return time.time() * 1000
@@ -83,6 +89,22 @@ class GestureEngine:
                 return it.get("id")
         return "V_SIGN"
 
+    def _avg_speed_px_per_s(self) -> float:
+        """
+        基于 track 内点计算平均速度（px/s）。
+        TrackWindow pts: (t_ms, x, y)
+        """
+        pts = self.track.pts
+        if len(pts) < 6:
+            return 0.0
+        t0, x0, y0 = pts[0]
+        t1, x1, y1 = pts[-1]
+        dt = (t1 - t0) / 1000.0
+        if dt <= 1e-6:
+            return 0.0
+        dist = float(((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5)
+        return dist / dt
+
     def update_bare(self, lm: np.ndarray, state):
         g = self.cfg["general"]
         self.track.set_window(int(g.get("dynamic_window_ms", 450)))
@@ -93,8 +115,10 @@ class GestureEngine:
         cooldown_ms = int(g.get("cooldown_ms", 450))
         swipe_thresh = float(g.get("swipe_thresh_px", 80))
 
-        # 关键：移动抑制 click 的阈值（越大越不容易抑制）
+        # click门控参数
         click_guard_move_px = float(g.get("click_guard_move_px", 35))
+        click_hold_frames = int(g.get("click_hold_frames", 2))
+        click_max_speed = float(g.get("click_max_speed_px_per_s", 650))
 
         if lm is None:
             self.scroll.stop()
@@ -102,6 +126,8 @@ class GestureEngine:
             self._unknown_count = 0
             self._pinch_middle_down = False
             self._index_middle_close_down = False
+            self._pinch_middle_hold = 0
+            self._index_middle_close_hold = 0
             return None, None, None
 
         # track: index tip
@@ -120,22 +146,27 @@ class GestureEngine:
             self._unknown_count = 0
             return None, raw_static, None
 
-        # ----- movement guard：移动明显时屏蔽 click 类 -----
-        # 用轨迹窗口的路径长度判断是否在“移动中”
+        # movement guard：移动明显时屏蔽 click
         moving = (self.track.length() > click_guard_move_px)
 
-        # ----- 三指捏合检测（屏蔽用） -----
+        # speed gate：速度过快时屏蔽 click
+        speed = self._avg_speed_px_per_s()
+        slow_enough = (speed <= click_max_speed)
+
+        # 三指捏合屏蔽
         is_pinch_index = pinch_ratio(lm, TIP["thumb"], TIP["index"]) < pinch_thr
         is_pinch_middle = pinch_ratio(lm, TIP["thumb"], TIP["middle"]) < pinch_thr
         is_three_pinch = is_pinch_index and is_pinch_middle
 
         if is_three_pinch:
-            # 屏蔽所有“捏合相关”的复合/滚动/并拢双击，且重置边沿状态
             self.scroll.stop()
+            # 直接把 hold/down 置为“按下”，避免松开瞬间边沿触发
             self._pinch_middle_down = True
             self._index_middle_close_down = True
+            self._pinch_middle_hold = 0
+            self._index_middle_close_hold = 0
         else:
-            # ----- PINCH_SCROLL：thumb+index pinch 状态滚动（保留，不受 moving 屏蔽） -----
+            # PINCH_SCROLL：thumb+index pinch 状态滚动（保留，不受 click 门控影响）
             if self._gesture_item("PINCH_SCROLL") and self._enable_when_ok("PINCH_SCROLL", state):
                 if is_pinch_index:
                     x, y = lm[TIP["index"]][0], lm[TIP["index"]][1]
@@ -158,49 +189,61 @@ class GestureEngine:
                 else:
                     self.scroll.stop()
 
-            # ----- click 类（右键/双击）：moving 时屏蔽 -----
-            if not moving:
-                # ----- PINCH_RIGHT_CLICK：thumb+middle pinch（边沿触发一次） -----
+            # click类门控：必须“不在移动中”且“足够慢”
+            click_allowed = (not moving) and slow_enough
+
+            if click_allowed:
+                # --- PINCH_RIGHT_CLICK：thumb+middle pinch（持续N帧 + 边沿触发） ---
                 if self._gesture_item("PINCH_RIGHT_CLICK") and self._enable_when_ok("PINCH_RIGHT_CLICK", state):
                     if is_pinch_middle:
-                        if not self._pinch_middle_down:
-                            cd = int(self._param("PINCH_RIGHT_CLICK", "cooldown_ms", 500))
-                            if self._cooldown_ok("PINCH_RIGHT_CLICK", cd):
-                                self._pinch_middle_down = True
-                                return "PINCH_RIGHT_CLICK", raw_static, None
-                        self._pinch_middle_down = True
+                        self._pinch_middle_hold += 1
+                        if self._pinch_middle_hold >= click_hold_frames:
+                            if not self._pinch_middle_down:
+                                cd = int(self._param("PINCH_RIGHT_CLICK", "cooldown_ms", 500))
+                                if self._cooldown_ok("PINCH_RIGHT_CLICK", cd):
+                                    self._pinch_middle_down = True
+                                    return "PINCH_RIGHT_CLICK", raw_static, None
+                            self._pinch_middle_down = True
                     else:
                         self._pinch_middle_down = False
+                        self._pinch_middle_hold = 0
                 else:
-                    # 若手势被禁用，确保状态不挂住
                     self._pinch_middle_down = False
+                    self._pinch_middle_hold = 0
 
-                # ----- INDEX_MIDDLE_DOUBLE_CLICK：index+middle close（边沿触发一次） -----
+                # --- INDEX_MIDDLE_DOUBLE_CLICK：index+middle close（持续N帧 + 边沿触发） ---
                 if self._gesture_item("INDEX_MIDDLE_DOUBLE_CLICK") and self._enable_when_ok("INDEX_MIDDLE_DOUBLE_CLICK", state):
                     is_close = close_ratio(lm, TIP["index"], TIP["middle"]) < close_thr
                     if is_close:
-                        if not self._index_middle_close_down:
-                            cd = int(self._param("INDEX_MIDDLE_DOUBLE_CLICK", "cooldown_ms", 700))
-                            if self._cooldown_ok("INDEX_MIDDLE_DOUBLE_CLICK", cd):
-                                self._index_middle_close_down = True
-                                return "INDEX_MIDDLE_DOUBLE_CLICK", raw_static, None
-                        self._index_middle_close_down = True
+                        self._index_middle_close_hold += 1
+                        if self._index_middle_close_hold >= click_hold_frames:
+                            if not self._index_middle_close_down:
+                                cd = int(self._param("INDEX_MIDDLE_DOUBLE_CLICK", "cooldown_ms", 700))
+                                if self._cooldown_ok("INDEX_MIDDLE_DOUBLE_CLICK", cd):
+                                    self._index_middle_close_down = True
+                                    return "INDEX_MIDDLE_DOUBLE_CLICK", raw_static, None
+                            self._index_middle_close_down = True
                     else:
                         self._index_middle_close_down = False
+                        self._index_middle_close_hold = 0
                 else:
                     self._index_middle_close_down = False
+                    self._index_middle_close_hold = 0
+
             else:
-                # moving 时：不允许 click，且复位边沿状态，避免滑动中误触发
+                # 不允许 click：复位 click 状态，避免滑动/快速动作误触发
                 self._pinch_middle_down = False
                 self._index_middle_close_down = False
+                self._pinch_middle_hold = 0
+                self._index_middle_close_hold = 0
 
-        # ----- 静态事件（可绑定；默认绑定为空） -----
+        # 静态事件（可绑定）
         if confirmed_static and self._gesture_item(confirmed_static) and self._enable_when_ok(confirmed_static, state):
             cd = int(self._param(confirmed_static, "cooldown_ms", cooldown_ms))
             if self._cooldown_ok(confirmed_static, cd):
                 return confirmed_static, raw_static, None
 
-        # ----- 动态 SWIPE_* -----
+        # 动态 SWIPE_*
         dx, dy = self.track.delta()
         if abs(dx) > abs(dy) and abs(dx) > swipe_thresh:
             gid = "SWIPE_RIGHT" if dx > 0 else "SWIPE_LEFT"
@@ -214,7 +257,7 @@ class GestureEngine:
                 self.track.reset()
                 return gid, raw_static, None
 
-        # ----- UNKNOWN -----
+        # UNKNOWN
         if raw_static is None and self._gesture_item("UNKNOWN") and self._enable_when_ok("UNKNOWN", state):
             self._unknown_count += 1
             need = int(self._param("UNKNOWN", "stable_frames", 3))

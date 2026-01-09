@@ -29,7 +29,7 @@ from vision.gesture_engine import GestureEngine
 from vision.glove_tracker_c import GloveTrackerC
 from vision.dynamic_track import TrackWindow
 from vision.custom_gestures import CustomGestureManager
-from PyQt6.QtWidgets import QGroupBox, QFormLayout
+
 
 class MainWindow(QWidget):
     def __init__(self):
