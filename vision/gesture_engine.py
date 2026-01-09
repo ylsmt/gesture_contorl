@@ -107,7 +107,8 @@ class GestureEngine:
         # track: index tip
         self.track.add(lm[TIP["index"]][0], lm[TIP["index"]][1])
 
-        raw_static = classify_static(lm, pinch_thr, close_thr)
+        rules_cfg = self.cfg.get("general", {}).get("finger_rules", {})
+        raw_static = classify_static(lm, pinch_thr, close_thr, rules_cfg=rules_cfg)
         confirmed_static = self._stable_confirm(raw_static, stable_frames)
 
         # mouse_move_mode：仅用于鼠标移动输出

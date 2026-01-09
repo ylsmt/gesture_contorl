@@ -247,3 +247,120 @@ JSON
 
 如果你希望进一步把误触降到更低（尤其是“刚开始滑动的一瞬间误触”），我还可以在这个整文件基础上再加一个“速度/方向一致性”门控：只有在 pinch/close 持续 N 帧且轨迹速度低于阈值才允许触发 click。
 
+
+
+
+
+增加手指方向判断
+
+可以，而且非常值得加。你现在的“手指是否伸出”主要靠 **y 坐标比较（tip.y < pip.y）**，这对手旋转、摄像头角度变化、手横着放、以及镜像/俯仰都会不稳。加入“手指方向”判断后，能把很多误判（尤其是 THUMBS_UP、INDEX_ONLY、THUMB_PINKY、V_SIGN）压下去。
+
+下面给你一个工程上性价比很高、无需训练的做法：用**向量夹角/投影**判断“指尖是否沿手掌法向方向伸出”。
+
+------
+
+## 思路：用“手掌平面坐标系”做方向判定（比全局 y 更稳）
+
+以 MediaPipe 的关键点为例（裸手模式）：
+
+1. 用手腕（0）、食指 MCP（5）、小指 MCP（17）构建手掌坐标系：
+
+- `palm_x = normalize(mcp_index - wrist)`（朝食指根部方向）
+- `palm_y = normalize(mcp_pinky - wrist)`（朝小指根部方向）
+- 手掌平面法向 `palm_n = normalize(cross(palm_x, palm_y))`（需要3D才有 z；如果只有2D，可用替代方案）
+
+你当前只有 2D 像素坐标，没有 z。那就用 2D 版本的替代方法：
+
+### 2D 版本（推荐你现在直接用）
+
+对每根手指，用“从 MCP 到 TIP 的向量”判断其是否“足够长且方向一致”：
+
+- 长度门槛：`|TIP - MCP| / palm_width > len_thr`
+- 方向一致门槛（相对掌心中心点）：
+  - 计算掌心中心 `C = (wrist + index_mcp + pinky_mcp)/3`
+  - 计算指向向量 `v = TIP - MCP`
+  - 计算“从掌心指向指尖”的向量 `u = TIP - C`
+  - 要求 `cos(angle(v, u))` 足够大（例如 > 0.6），表示这根指确实“朝外伸出”，而不是弯折导致 tip 掉回掌心附近
+
+这能显著区分“弯曲/收拢”与“真正伸出”，并且不依赖 y 轴方向。
+
+------
+
+## 具体改法：在 `vision/gesture_primitives.py` 增加方向判定并替换 finger_states
+
+下面是你可以直接粘贴用的补丁（基于你目前的最终版 primitives 文件）。核心是新增两个函数：
+
+- `cos_sim(a,b)`
+- `is_finger_extended_dir(lm, mcp_i, tip_i, center, palm_w, len_thr, cos_thr)`
+
+然后让 `finger_states()` 用它来判定 index/middle/ring/pinky（拇指单独规则）。
+
+
+
+## 参数怎么调（给你一套默认值）
+
+- `len_thr`：0.50~0.60（越大越严格，误判少但漏检多）
+- `cos_thr`：0.45~0.65（越大越严格，能过滤弯折的假伸出）
+
+推荐先用我上面给的：
+
+- index/middle/ring：len 0.55 + cos 0.55
+- pinky：len 0.50 + cos 0.50（小拇指短一点）
+
+------
+
+## 额外增强（可选，但很有效）
+
+对 `THUMBS_UP`、`INDEX_ONLY` 这类“单指”手势再加一个“其它指必须明确收拢”的条件，例如要求其它指的 `len_ratio < 0.45`，可以避免“半伸不伸”误判。
+
+------
+
+如果你愿意，我也可以把上述阈值变成配置项（写进 `general` 或写进每个手势的 `params`），让用户在 UI 里调，而不是写死在代码里。这样在不同摄像头距离/手大小情况下更容易适配。
+
+
+
+下面把“手指方向判定 + 额外增强”的阈值**全部配置化**，并且在 UI 里提供可调控件（无需用户手改 JSON）。我给你按当前工程结构的**可直接落盘的整文件/补丁**：
+
+- 1. 配置新增字段（`config/default_config.json` 或 `config_io.DEFAULT_CONFIG`）
+- 1. `vision/gesture_primitives.py` 改为读取配置并应用“方向+长度+单指增强”
+- 1. `ui/main_window.py` 增加一个“识别参数”区域：滑块/数值框调这些阈值，并实时写入 cfg
+
+> 说明：你当前 `GestureEngine.update_bare()` 调用 `classify_static(lm, pinch_thr, close_thr)`，我会把 `classify_static` 改成第三个参数 `rules_cfg`（来自 cfg["general"]["finger_rules"]），由 engine 传入。这样方向判定参数是实时可调的。
+
+
+
+在你的 `general` 里追加一个对象 `finger_rules`（建议直接复制）：
+
+JSON
+
+
+
+```
+"finger_rules": {
+  "use_direction": true,
+
+  "index": {"len_thr": 0.55, "cos_thr": 0.55},
+  "middle": {"len_thr": 0.55, "cos_thr": 0.55},
+  "ring": {"len_thr": 0.55, "cos_thr": 0.55},
+  "pinky": {"len_thr": 0.50, "cos_thr": 0.50},
+
+  "thumb": {"len_thr": 0.50, "cos_thr": 0.20},
+
+  "single_finger_enhance": true,
+  "others_fold_len_thr": 0.45
+}
+```
+
+解释：
+
+- `use_direction`: 是否启用“方向一致性”判定（可一键回退到旧逻辑）
+
+- `index/middle/ring/pinky`: 四指的“长度阈值 + 方向阈值”
+
+- `thumb`: 拇指的长度阈值与方向阈值（方向阈值可以低些）
+
+- `single_finger_enhance`: 是否启用“单指手势增强”（避免半伸导致误判）
+
+- `others_fold_len_thr`: 单指增强时，要求其它指“相对长度”小于该阈值才算收拢
+
+  

@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtWidgets import QGroupBox, QFormLayout
 
 from config_io import load_config, save_config, DEFAULT_CONFIG_PATH
 from control.state import SystemState
@@ -28,7 +29,7 @@ from vision.gesture_engine import GestureEngine
 from vision.glove_tracker_c import GloveTrackerC
 from vision.dynamic_track import TrackWindow
 from vision.custom_gestures import CustomGestureManager
-
+from PyQt6.QtWidgets import QGroupBox, QFormLayout
 
 class MainWindow(QWidget):
     def __init__(self):
@@ -129,9 +130,91 @@ class MainWindow(QWidget):
         mouse_row.addWidget(self.spin_dead)
         mouse_row.addStretch(1)
 
+        # ===== 识别参数：手指方向与单指增强（全部可调）=====
+        fr = self.cfg["general"].setdefault("finger_rules", {})
+
+        def _get2(d, k, default):
+            if not isinstance(d, dict):
+                return default
+            return d.get(k, default)
+
+        use_dir = bool(fr.get("use_direction", True))
+        enh = bool(fr.get("single_finger_enhance", True))
+        others_thr = float(fr.get("others_fold_len_thr", 0.45))
+
+        # 每指默认阈值
+        idx_len = float(_get2(fr.get("index", {}), "len_thr", 0.55))
+        idx_cos = float(_get2(fr.get("index", {}), "cos_thr", 0.55))
+        mid_len = float(_get2(fr.get("middle", {}), "len_thr", 0.55))
+        mid_cos = float(_get2(fr.get("middle", {}), "cos_thr", 0.55))
+        ring_len = float(_get2(fr.get("ring", {}), "len_thr", 0.55))
+        ring_cos = float(_get2(fr.get("ring", {}), "cos_thr", 0.55))
+        pinky_len = float(_get2(fr.get("pinky", {}), "len_thr", 0.50))
+        pinky_cos = float(_get2(fr.get("pinky", {}), "cos_thr", 0.50))
+        thumb_len = float(_get2(fr.get("thumb", {}), "len_thr", 0.50))
+        thumb_cos = float(_get2(fr.get("thumb", {}), "cos_thr", 0.20))
+
+        self.chk_use_dir = QCheckBox("启用方向判定")
+        self.chk_use_dir.setChecked(use_dir)
+
+        self.chk_enhance = QCheckBox("单指增强（要求其它指收拢）")
+        self.chk_enhance.setChecked(enh)
+
+        self.spin_others_fold = QDoubleSpinBox()
+        self.spin_others_fold.setRange(0.10, 1.00)
+        self.spin_others_fold.setSingleStep(0.02)
+        self.spin_others_fold.setValue(others_thr)
+
+        def _mk_spin_len(val):
+            s = QDoubleSpinBox()
+            s.setRange(0.10, 1.20)
+            s.setSingleStep(0.02)
+            s.setDecimals(2)
+            s.setValue(float(val))
+            return s
+
+        def _mk_spin_cos(val):
+            s = QDoubleSpinBox()
+            s.setRange(-1.00, 1.00)
+            s.setSingleStep(0.05)
+            s.setDecimals(2)
+            s.setValue(float(val))
+            return s
+
+        self.spin_idx_len = _mk_spin_len(idx_len)
+        self.spin_idx_cos = _mk_spin_cos(idx_cos)
+        self.spin_mid_len = _mk_spin_len(mid_len)
+        self.spin_mid_cos = _mk_spin_cos(mid_cos)
+        self.spin_ring_len = _mk_spin_len(ring_len)
+        self.spin_ring_cos = _mk_spin_cos(ring_cos)
+        self.spin_pinky_len = _mk_spin_len(pinky_len)
+        self.spin_pinky_cos = _mk_spin_cos(pinky_cos)
+        self.spin_thumb_len = _mk_spin_len(thumb_len)
+        self.spin_thumb_cos = _mk_spin_cos(thumb_cos)
+
+        box = QGroupBox("识别参数：手指方向与单指增强（实时生效）")
+        form = QFormLayout()
+        form.addRow(self.chk_use_dir)
+        form.addRow(self.chk_enhance)
+        form.addRow("其它指收拢阈值 others_fold_len_thr", self.spin_others_fold)
+
+        form.addRow("食指 index len_thr", self.spin_idx_len)
+        form.addRow("食指 index cos_thr", self.spin_idx_cos)
+        form.addRow("中指 middle len_thr", self.spin_mid_len)
+        form.addRow("中指 middle cos_thr", self.spin_mid_cos)
+        form.addRow("无名指 ring len_thr", self.spin_ring_len)
+        form.addRow("无名指 ring cos_thr", self.spin_ring_cos)
+        form.addRow("小拇指 pinky len_thr", self.spin_pinky_len)
+        form.addRow("小拇指 pinky cos_thr", self.spin_pinky_cos)
+        form.addRow("拇指 thumb len_thr", self.spin_thumb_len)
+        form.addRow("拇指 thumb cos_thr", self.spin_thumb_cos)
+
+        box.setLayout(form)
+
         layout = QVBoxLayout()
         layout.addLayout(top)
         layout.addLayout(mouse_row)
+        layout.addWidget(box)          # <-- 现在放这里
         layout.addWidget(self.preview)
         self.setLayout(layout)
 
@@ -210,6 +293,20 @@ class MainWindow(QWidget):
         self.btn_load.clicked.connect(self._load_config_dialog)
         self.btn_save.clicked.connect(self._save_config)
 
+        self.chk_use_dir.toggled.connect(self._on_finger_rules_changed)
+        self.chk_enhance.toggled.connect(self._on_finger_rules_changed)
+        self.spin_others_fold.valueChanged.connect(self._on_finger_rules_changed)
+
+        self.spin_idx_len.valueChanged.connect(self._on_finger_rules_changed)
+        self.spin_idx_cos.valueChanged.connect(self._on_finger_rules_changed)
+        self.spin_mid_len.valueChanged.connect(self._on_finger_rules_changed)
+        self.spin_mid_cos.valueChanged.connect(self._on_finger_rules_changed)
+        self.spin_ring_len.valueChanged.connect(self._on_finger_rules_changed)
+        self.spin_ring_cos.valueChanged.connect(self._on_finger_rules_changed)
+        self.spin_pinky_len.valueChanged.connect(self._on_finger_rules_changed)
+        self.spin_pinky_cos.valueChanged.connect(self._on_finger_rules_changed)
+        self.spin_thumb_len.valueChanged.connect(self._on_finger_rules_changed)
+        self.spin_thumb_cos.valueChanged.connect(self._on_finger_rules_changed)
     def closeEvent(self, e):
         self._stop_camera()
         self.mouse_worker.stop()
@@ -506,6 +603,33 @@ class MainWindow(QWidget):
         self.cfg["general"]["mouse_smoothing"] = float(self.spin_smooth.value())
         self.cfg["general"]["mouse_sensitivity"] = float(self.spin_sens.value())
         self.cfg["general"]["mouse_deadzone_px"] = int(self.spin_dead.value())
+
+    def _on_finger_rules_changed(self, *_):
+        fr = self.cfg["general"].setdefault("finger_rules", {})
+
+        fr["use_direction"] = bool(self.chk_use_dir.isChecked())
+        fr["single_finger_enhance"] = bool(self.chk_enhance.isChecked())
+        fr["others_fold_len_thr"] = float(self.spin_others_fold.value())
+
+        fr.setdefault("index", {})
+        fr["index"]["len_thr"] = float(self.spin_idx_len.value())
+        fr["index"]["cos_thr"] = float(self.spin_idx_cos.value())
+
+        fr.setdefault("middle", {})
+        fr["middle"]["len_thr"] = float(self.spin_mid_len.value())
+        fr["middle"]["cos_thr"] = float(self.spin_mid_cos.value())
+
+        fr.setdefault("ring", {})
+        fr["ring"]["len_thr"] = float(self.spin_ring_len.value())
+        fr["ring"]["cos_thr"] = float(self.spin_ring_cos.value())
+
+        fr.setdefault("pinky", {})
+        fr["pinky"]["len_thr"] = float(self.spin_pinky_len.value())
+        fr["pinky"]["cos_thr"] = float(self.spin_pinky_cos.value())
+
+        fr.setdefault("thumb", {})
+        fr["thumb"]["len_thr"] = float(self.spin_thumb_len.value())
+        fr["thumb"]["cos_thr"] = float(self.spin_thumb_cos.value())
 
     def _open_binding_manager(self):
         dlg = BindingManager(self.cfg, parent=self)

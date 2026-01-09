@@ -26,7 +26,8 @@
     "dynamic_window_ms": 550,
     "swipe_thresh_px": 70,
     "custom_match_threshold": 0.22,
-    "click_guard_move_px": 25
+    "click_guard_move_px": 25,
+    "finger_rules": {}
   },
   "gesture_catalog": [
     {
