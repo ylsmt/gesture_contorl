@@ -37,7 +37,7 @@ DEFAULT_CONFIG = {
     "scroll_deadzone_px": 6,
     "scroll_max_step": 120,
     "dynamic_window_ms": 450,
-    "swipe_thresh_px": 120
+    "swipe_thresh_px": 80
   },
 
   "gesture_catalog": [
@@ -79,10 +79,10 @@ DEFAULT_CONFIG = {
       "title": "拇指+中指捏合",
       "type": "composite",
       "mode": "bare",
-      "description": "鼠标移动模式下，拇指与中指捏合触发",
+      "description": "拇指与中指捏合触发",
       "default_use": "right_click",
       "notes": "",
-      "enable_when": {"mouse_move_mode": True},
+      "enable_when": {},
       "params": {"cooldown_ms": 500}
     },
     {
@@ -90,10 +90,10 @@ DEFAULT_CONFIG = {
       "title": "食指+中指并拢",
       "type": "composite",
       "mode": "bare",
-      "description": "鼠标移动模式下，食指与中指并拢触发双击",
+      "description": "食指与中指并拢触发双击",
       "default_use": "double_click_left",
       "notes": "",
-      "enable_when": {"mouse_move_mode": True},
+      "enable_when": {},
       "params": {"cooldown_ms": 700}
     },
     {
@@ -104,7 +104,7 @@ DEFAULT_CONFIG = {
       "description": "拇指+食指捏合进入滚动模式，位移比例滚动",
       "default_use": "scroll_proportional",
       "notes": "纵向dy滚动；横向dx使用Shift+Wheel",
-      "enable_when": {"mouse_move_mode": True},
+      "enable_when": {},
       "params": {}
     },
     {
@@ -150,6 +150,50 @@ DEFAULT_CONFIG = {
       "notes": "",
       "enable_when": {},
       "params": {}
+    },
+    {
+      "id": "INDEX_ONLY",
+      "title": "单食指",
+      "type": "static",
+      "mode": "bare",
+      "description": "仅食指伸出，其余收拢",
+      "default_use": "custom_bind",
+      "notes": "",
+      "enable_when": {},
+      "params": {"cooldown_ms": 450, "stable_frames": 2}
+    },
+    {
+      "id": "THUMB_PINKY",
+      "title": "拇指+小拇指",
+      "type": "static",
+      "mode": "bare",
+      "description": "拇指与小拇指伸出，其余收拢",
+      "default_use": "custom_bind",
+      "notes": "",
+      "enable_when": {},
+      "params": {"cooldown_ms": 450, "stable_frames": 2}
+    },
+    {
+      "id": "FIST",
+      "title": "握拳",
+      "type": "static",
+      "mode": "bare",
+      "description": "四指收拢且拇指不伸出",
+      "default_use": "custom_bind",
+      "notes": "",
+      "enable_when": {},
+      "params": {"cooldown_ms": 450, "stable_frames": 2}
+    },
+    {
+      "id": "UNKNOWN",
+      "title": "无法识别",
+      "type": "static",
+      "mode": "bare",
+      "description": "检测到手但无法匹配任何已定义手势",
+      "default_use": "custom_bind",
+      "notes": "可用于提示或触发自定义动作",
+      "enable_when": {},
+      "params": {"cooldown_ms": 800, "stable_frames": 3}
     }
   ],
 

@@ -27,6 +27,12 @@ class CameraThread(QThread):
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         cap.set(cv2.CAP_PROP_FPS, self.fps)
 
+        # warm-up: 丢弃几帧让曝光/协商稳定
+        for _ in range(5):
+            ok, _f = cap.read()
+            if not ok:
+                break
+
         while self._running:
             ok, frame = cap.read()
             if not ok:

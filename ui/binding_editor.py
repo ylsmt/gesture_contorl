@@ -1,30 +1,43 @@
 import json
+from typing import Any, Dict, Optional
+
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QMessageBox, QInputDialog
+    QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QMessageBox
 )
+
 from config.schema_runtime import action_schema_from_catalog, validate_object
 from ui.forms import DynamicForm
 
+
 class BindingEditor(QDialog):
-    def __init__(self, cfg: dict, parent=None):
+    """
+    固定编辑一个 scope：
+      - scope="global": cfg["bindings"]["global"]
+      - scope="per_app": cfg["bindings"]["per_app"][app_name]
+    手势：下拉可输入
+    动作：下拉 + schema 表单生成 + 校验 + 高级JSON
+    """
+    def __init__(self, cfg: dict, scope: str, app_name: Optional[str], parent=None):
         super().__init__(parent)
         self.cfg = cfg
-        self.setWindowTitle("绑定编辑器（表单模式）")
-        self.resize(980, 620)
+        self.scope = scope
+        self.app_name = app_name
 
-        self.scope = QComboBox()
-        self.scope.addItems(["global", "per_app"])
-        self.app_name = QLineEdit()
-        self.app_name.setPlaceholderText("进程名（scope=per_app 时有效，例如 POWERPNT.EXE）")
+        title = "绑定编辑 - 全局" if scope == "global" else f"绑定编辑 - {app_name}"
+        self.setWindowTitle(title)
+        self.resize(1040, 640)
 
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["gesture_id", "action"])
         self.table.horizontalHeader().setStretchLastSection(True)
 
-        self.gesture_in = QLineEdit()
-        self.gesture_in.setPlaceholderText("gesture_id，例如 THUMBS_UP / PINCH_RIGHT_CLICK / SWIPE_LEFT ...")
+        # 手势输入：下拉 + 可输入
+        self.gesture_in = QComboBox()
+        self.gesture_in.setEditable(True)
+        self._reload_gesture_choices()
 
+        # 动作类型下拉（来自 action_catalog）
         self.action_type = QComboBox()
         self.action_type.addItems([it.get("type","") for it in self.cfg.get("action_catalog", []) if it.get("type")])
 
@@ -34,42 +47,36 @@ class BindingEditor(QDialog):
         self.btn_reload = QPushButton("刷新")
         self.btn_close = QPushButton("关闭")
 
+        # 表单区域
         self.form_holder = QVBoxLayout()
-        self.form_widget = None
-        self._rebuild_form({})
+        self.form_widget: Optional[DynamicForm] = None
+        self._rebuild_form(initial={})
 
         top = QHBoxLayout()
-        top.addWidget(QLabel("范围："))
-        top.addWidget(self.scope)
-        top.addWidget(QLabel("应用："))
-        top.addWidget(self.app_name, 2)
-        top.addStretch(1)
         top.addWidget(self.btn_reload)
+        top.addWidget(self.btn_del)
+        top.addStretch(1)
+        top.addWidget(self.btn_close)
 
         form_row = QHBoxLayout()
         form_row.addWidget(QLabel("手势："))
-        form_row.addWidget(self.gesture_in, 3)
+        form_row.addWidget(self.gesture_in, 2)
         form_row.addWidget(QLabel("动作："))
         form_row.addWidget(self.action_type, 2)
         form_row.addWidget(self.btn_json)
         form_row.addWidget(self.btn_add)
-
-        bottom = QHBoxLayout()
-        bottom.addWidget(self.btn_del)
-        bottom.addStretch(1)
-        bottom.addWidget(self.btn_close)
 
         lay = QVBoxLayout()
         lay.addLayout(top)
         lay.addWidget(self.table, 3)
         lay.addLayout(form_row)
         lay.addLayout(self.form_holder)
-        lay.addLayout(bottom)
         self.setLayout(lay)
 
+        # events
         self.btn_reload.clicked.connect(self.reload)
-        self.btn_add.clicked.connect(self.add_update)
         self.btn_del.clicked.connect(self.delete_selected)
+        self.btn_add.clicked.connect(self.add_update)
         self.btn_close.clicked.connect(self.accept)
         self.btn_json.clicked.connect(self.edit_json)
         self.action_type.currentTextChanged.connect(self.on_action_type_changed)
@@ -77,32 +84,39 @@ class BindingEditor(QDialog):
 
         self.reload()
 
-    def _map(self):
+    def _reload_gesture_choices(self):
+        ids = []
+        for it in self.cfg.get("gesture_catalog", []):
+            gid = it.get("id")
+            if gid:
+                ids.append(gid)
+        for it in self.cfg.get("custom_gestures", []):
+            gid = it.get("id")
+            if gid:
+                ids.append(gid)
+        ids = sorted(set(ids))
+        self.gesture_in.clear()
+        self.gesture_in.addItems(ids)
+
+    def _map(self) -> dict:
         b = self.cfg.setdefault("bindings", {})
-        scope = self.scope.currentText()
-        if scope == "global":
+        if self.scope == "global":
             return b.setdefault("global", {})
-        app = self.app_name.text().strip()
-        if not app:
-            app, ok = QInputDialog.getText(self, "输入进程名", "进程名：")
-            if not ok or not app.strip():
-                return {}
-            self.app_name.setText(app.strip())
         per = b.setdefault("per_app", {})
-        per.setdefault(app, {})
-        return per[app]
+        per.setdefault(self.app_name, {})
+        return per[self.app_name]
 
     def reload(self):
+        self._reload_gesture_choices()
         m = self._map()
         self.table.setRowCount(0)
-        for k, v in m.items():
+        for gid, action in m.items():
             r = self.table.rowCount()
             self.table.insertRow(r)
-            self.table.setItem(r, 0, QTableWidgetItem(str(k)))
-            self.table.setItem(r, 1, QTableWidgetItem(json.dumps(v, ensure_ascii=False)))
+            self.table.setItem(r, 0, QTableWidgetItem(str(gid)))
+            self.table.setItem(r, 1, QTableWidgetItem(json.dumps(action, ensure_ascii=False)))
 
-    def _rebuild_form(self, initial: dict):
-        # 清空 holder
+    def _rebuild_form(self, initial: Dict[str, Any]):
         while self.form_holder.count():
             item = self.form_holder.takeAt(0)
             w = item.widget()
@@ -116,26 +130,23 @@ class BindingEditor(QDialog):
         self.form_holder.addWidget(self.form_widget)
 
     def on_action_type_changed(self, _):
-        self._rebuild_form({})
+        self._rebuild_form(initial={})
 
     def on_row_clicked(self, row, col):
         m = self._map()
-        if row < 0:
-            return
         gid = self.table.item(row, 0).text()
         action = m.get(gid)
         if not isinstance(action, dict):
             return
-        self.gesture_in.setText(gid)
+
+        self.gesture_in.setCurrentText(gid)
         atype = action.get("type", "")
         if atype:
             self.action_type.setCurrentText(atype)
-            # 重新建表单并填充
             init = {k: v for k, v in action.items() if k != "type"}
-            self._rebuild_form(init)
+            self._rebuild_form(initial=init)
 
     def edit_json(self):
-        # 从表单生成 action 作为初值
         atype = self.action_type.currentText().strip()
         payload = self.form_widget.get_data() if self.form_widget else {}
         action = {"type": atype, **payload}
@@ -144,7 +155,7 @@ class BindingEditor(QDialog):
         from PyQt6.QtWidgets import QDialog, QTextEdit, QVBoxLayout
         dlg = QDialog(self)
         dlg.setWindowTitle("编辑 action JSON（高级）")
-        dlg.resize(640, 420)
+        dlg.resize(680, 460)
         te = QTextEdit()
         te.setPlainText(text)
         ok = QPushButton("应用")
@@ -165,7 +176,7 @@ class BindingEditor(QDialog):
                     raise ValueError("action 必须为对象且包含 type")
                 self.action_type.setCurrentText(obj["type"])
                 init = {k: v for k, v in obj.items() if k != "type"}
-                self._rebuild_form(init)
+                self._rebuild_form(initial=init)
                 dlg.accept()
             except Exception as ex:
                 QMessageBox.critical(self, "JSON错误", str(ex))
@@ -175,7 +186,7 @@ class BindingEditor(QDialog):
         dlg.exec()
 
     def add_update(self):
-        gid = self.gesture_in.text().strip()
+        gid = self.gesture_in.currentText().strip()
         if not gid:
             QMessageBox.warning(self, "提示", "gesture_id 不能为空")
             return
@@ -184,7 +195,6 @@ class BindingEditor(QDialog):
         payload = self.form_widget.get_data() if self.form_widget else {}
         action = {"type": atype, **payload}
 
-        # schema 校验
         schema = action_schema_from_catalog(self.cfg.get("action_catalog", []), atype)
         if schema:
             errs = validate_object(payload, schema, path="$")

@@ -13,35 +13,41 @@ def do_action(action: dict, state):
 
     t = action.get("type")
 
-    # 开关类：永远允许执行（否则关了打不开）
+    # 开关类：永远允许执行
     if t == "toggle_recognition":
         state.recognition_enabled = not state.recognition_enabled
         return
+
     if t == "toggle_execution":
         state.execution_enabled = not state.execution_enabled
         if not state.execution_enabled:
-            # 避免拖拽卡住
             try:
                 mouse.release(Button.left)
             except Exception:
                 pass
         return
+
     if t == "toggle_camera_preview":
         state.camera_preview_enabled = not state.camera_preview_enabled
         return
+
     if t == "toggle_mouse_move_output":
         state.mouse_move_output_enabled = not state.mouse_move_output_enabled
         return
 
-    # 其余动作：受 execution_enabled 门控（recognition 门控由上层处理）
+    if t == "toggle_camera_device":
+        state.camera_device_enabled = not state.camera_device_enabled
+        return
+
+    # 其余动作受 execution_enabled 门控
     if not state.execution_enabled:
         return
 
     if t == "scroll_v":
         pyautogui.scroll(int(action.get("amount", 0)))
+
     elif t == "scroll_h_shiftwheel":
         amt = int(action.get("amount", 0))
-        # Shift+Wheel 模拟横滚：按住 shift 再滚轮
         pyautogui.keyDown("shift")
         try:
             pyautogui.scroll(amt)
