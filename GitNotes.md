@@ -249,6 +249,74 @@ JSON
 
 
 
+ME: 加一个“速度/方向一致性”门控：只有在 pinch/close 持续 N 帧且轨迹速度低于阈值才允许触发 click
+
+ANSWER:
+
+下面给你一个**整文件覆盖版** `vision/gesture_engine.py`，在上一版基础上加入你要的“速度/方向一致性门控”：
+
+- 对 click 类手势（
+
+  ```
+  PINCH_RIGHT_CLICK
+  ```
+
+  、
+
+  ```
+  INDEX_MIDDLE_DOUBLE_CLICK
+  ```
+
+  ）增加两个门控条件，只有同时满足才允许边沿触发：
+
+  1. **持续 N 帧**：pinch/close 连续为 True 达到 `click_hold_frames`
+  2. **低速**：轨迹窗口平均速度低于阈值 `click_max_speed_px_per_s`
+
+- 仍保留：
+
+  - 三指捏合屏蔽
+  - moving（轨迹长度）屏蔽 click
+  - 边沿触发一次
+  - PINCH_SCROLL 不受 click 门控影响
+
+你需要在 config 的 `general` 里加（可选，不加也有默认）：
+
+JSON
+
+
+
+```
+"click_hold_frames": 2,
+"click_max_speed_px_per_s": 650
+```
+
+
+
+
+
+## 配置建议（加入 general，Python 3.9 兼容）
+
+在 `config/default_config.json` 的 `general` 里加（或调整）：
+
+JSON
+
+
+
+```
+"click_guard_move_px": 35,
+"click_hold_frames": 2,
+"click_max_speed_px_per_s": 650
+```
+
+调参建议：
+
+- 误触仍多：把 `click_hold_frames` 调大到 3；或把 `click_max_speed_px_per_s` 调小到 450~550
+- click 难触发：把 `click_hold_frames` 调回 1~2；或把 `click_max_speed_px_per_s` 调大到 800
+
+这样能显著减少“滑动时误触右键/双击”，同时保持捏合/并拢动作在静止状态下可用。
+
+
+
 
 
 增加手指方向判断

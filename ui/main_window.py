@@ -1,14 +1,16 @@
+import os
 import time
 import cv2
 import numpy as np
+from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QComboBox, QVBoxLayout, QHBoxLayout,
-    QCheckBox, QMessageBox, QFileDialog, QDoubleSpinBox, QSpinBox
+    QCheckBox, QMessageBox, QFileDialog, QDoubleSpinBox, QSpinBox,
+    QGroupBox, QFormLayout
 )
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import QGroupBox, QFormLayout
 
 from config_io import load_config, save_config, DEFAULT_CONFIG_PATH
 from control.state import SystemState
@@ -35,7 +37,7 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("手势控制中心")
-        self.resize(1260, 840)
+        self.resize(1320, 920)
 
         self.cfg = load_config(DEFAULT_CONFIG_PATH)
         g = self.cfg["general"]
@@ -44,62 +46,135 @@ class MainWindow(QWidget):
             recognition_enabled=bool(g.get("recognition_enabled", True)),
             execution_enabled=bool(g.get("execution_enabled", True)),
             camera_preview_enabled=bool(g.get("show_camera_preview", True)),
-            camera_device_enabled=True,  # 默认开启设备
+            camera_device_enabled=True,
             mouse_move_output_enabled=bool(g.get("mouse_move_output_enabled", True)),
         )
 
-        # UI
+        # -------- UI: preview --------
         self.preview = QLabel("预览")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setStyleSheet("background:#111; color:#bbb;")
-        self.preview.setMinimumHeight(560)
+        self.preview.setMinimumHeight(520)
 
+        # -------- UI: top controls --------
         self.mode_box = QComboBox()
         self.mode_box.addItems(["bare", "glove"])
 
         self.preview_toggle = QCheckBox("显示预览")
-        self.preview_toggle.setChecked(self.state.camera_preview_enabled)
-
         self.camera_device_toggle = QCheckBox("摄像头设备 ON")
-        self.camera_device_toggle.setChecked(True)
-
         self.mirror_toggle = QCheckBox("镜像")
-        self.mirror_toggle.setChecked(bool(g.get("mirror_camera", True)))
-
         self.osd_toggle = QCheckBox("OSD")
-        self.osd_toggle.setChecked(bool(g.get("osd_enabled", True)))
-
         self.recog_toggle = QCheckBox("识别 ON")
-        self.recog_toggle.setChecked(self.state.recognition_enabled)
-
         self.exec_toggle = QCheckBox("执行 ON")
-        self.exec_toggle.setChecked(self.state.execution_enabled)
-
         self.mouse_move_output_toggle = QCheckBox("鼠标移动输出 ON")
-        self.mouse_move_output_toggle.setChecked(self.state.mouse_move_output_enabled)
-
-        self.spin_smooth = QDoubleSpinBox()
-        self.spin_smooth.setRange(0.0, 0.95)
-        self.spin_smooth.setSingleStep(0.05)
-        self.spin_smooth.setValue(float(g.get("mouse_smoothing", 0.35)))
-
-        self.spin_sens = QDoubleSpinBox()
-        self.spin_sens.setRange(0.3, 2.5)
-        self.spin_sens.setSingleStep(0.1)
-        self.spin_sens.setValue(float(g.get("mouse_sensitivity", 1.0)))
-
-        self.spin_dead = QSpinBox()
-        self.spin_dead.setRange(0, 20)
-        self.spin_dead.setValue(int(g.get("mouse_deadzone_px", 2)))
 
         self.btn_record_custom = QPushButton("录制自定义动态手势…")
+        self.btn_bindings = QPushButton("绑定管理…")
         self.btn_gestures = QPushButton("手势字典…")
         self.btn_actions = QPushButton("动作字典…")
-        self.btn_bindings = QPushButton("绑定管理…")
         self.btn_glove_calib = QPushButton("手套校准…")
         self.btn_load = QPushButton("加载配置…")
         self.btn_save = QPushButton("保存配置")
 
+        # -------- UI: mouse mapping --------
+        self.spin_smooth = QDoubleSpinBox()
+        self.spin_smooth.setRange(0.0, 0.95)
+        self.spin_smooth.setSingleStep(0.05)
+        self.spin_sens = QDoubleSpinBox()
+        self.spin_sens.setRange(0.3, 2.5)
+        self.spin_sens.setSingleStep(0.1)
+        self.spin_dead = QSpinBox()
+        self.spin_dead.setRange(0, 20)
+
+        # -------- UI: recognition parameters (新增补齐) --------
+        self.spin_dynamic_window = QSpinBox()
+        self.spin_dynamic_window.setRange(150, 2000)
+        self.spin_dynamic_window.setSingleStep(50)
+
+        self.spin_swipe_thresh = QDoubleSpinBox()
+        self.spin_swipe_thresh.setRange(20, 400)
+        self.spin_swipe_thresh.setSingleStep(5)
+        self.spin_swipe_thresh.setDecimals(1)
+
+        self.spin_pinch_thr = QDoubleSpinBox()
+        self.spin_pinch_thr.setRange(0.10, 0.80)
+        self.spin_pinch_thr.setSingleStep(0.01)
+        self.spin_pinch_thr.setDecimals(2)
+
+        self.spin_close_thr = QDoubleSpinBox()
+        self.spin_close_thr.setRange(0.10, 0.80)
+        self.spin_close_thr.setSingleStep(0.01)
+        self.spin_close_thr.setDecimals(2)
+
+        self.spin_click_guard_move = QDoubleSpinBox()
+        self.spin_click_guard_move.setRange(0, 300)
+        self.spin_click_guard_move.setSingleStep(5)
+        self.spin_click_guard_move.setDecimals(1)
+
+        self.spin_click_hold_frames = QSpinBox()
+        self.spin_click_hold_frames.setRange(1, 8)
+
+        self.spin_click_max_speed = QDoubleSpinBox()
+        self.spin_click_max_speed.setRange(50, 5000)
+        self.spin_click_max_speed.setSingleStep(50)
+        self.spin_click_max_speed.setDecimals(0)
+
+        self.spin_scroll_gain = QDoubleSpinBox()
+        self.spin_scroll_gain.setRange(0.1, 8.0)
+        self.spin_scroll_gain.setSingleStep(0.1)
+        self.spin_scroll_gain.setDecimals(2)
+
+        self.spin_scroll_dead = QDoubleSpinBox()
+        self.spin_scroll_dead.setRange(0, 50)
+        self.spin_scroll_dead.setSingleStep(1)
+        self.spin_scroll_dead.setDecimals(0)
+
+        self.spin_scroll_max = QDoubleSpinBox()
+        self.spin_scroll_max.setRange(10, 800)
+        self.spin_scroll_max.setSingleStep(10)
+        self.spin_scroll_max.setDecimals(0)
+
+        self.spin_custom_match = QDoubleSpinBox()
+        self.spin_custom_match.setRange(0.05, 1.00)
+        self.spin_custom_match.setSingleStep(0.01)
+        self.spin_custom_match.setDecimals(2)
+
+        # -------- UI: finger_rules full controls --------
+        fr = self.cfg["general"].setdefault("finger_rules", {})
+        self.chk_use_dir = QCheckBox("启用方向判定")
+        self.chk_enhance = QCheckBox("单指增强（要求其它指收拢）")
+
+        self.spin_others_fold = QDoubleSpinBox()
+        self.spin_others_fold.setRange(0.10, 1.00)
+        self.spin_others_fold.setSingleStep(0.02)
+        self.spin_others_fold.setDecimals(2)
+
+        def _mk_spin_len():
+            s = QDoubleSpinBox()
+            s.setRange(0.10, 1.20)
+            s.setSingleStep(0.02)
+            s.setDecimals(2)
+            return s
+
+        def _mk_spin_cos():
+            s = QDoubleSpinBox()
+            s.setRange(-1.00, 1.00)
+            s.setSingleStep(0.05)
+            s.setDecimals(2)
+            return s
+
+        self.spin_idx_len = _mk_spin_len()
+        self.spin_idx_cos = _mk_spin_cos()
+        self.spin_mid_len = _mk_spin_len()
+        self.spin_mid_cos = _mk_spin_cos()
+        self.spin_ring_len = _mk_spin_len()
+        self.spin_ring_cos = _mk_spin_cos()
+        self.spin_pinky_len = _mk_spin_len()
+        self.spin_pinky_cos = _mk_spin_cos()
+        self.spin_thumb_len = _mk_spin_len()
+        self.spin_thumb_cos = _mk_spin_cos()
+
+        # -------- Layout build --------
         top = QHBoxLayout()
         top.addWidget(QLabel("模式:"))
         top.addWidget(self.mode_box)
@@ -130,95 +205,53 @@ class MainWindow(QWidget):
         mouse_row.addWidget(self.spin_dead)
         mouse_row.addStretch(1)
 
-        # ===== 识别参数：手指方向与单指增强（全部可调）=====
-        fr = self.cfg["general"].setdefault("finger_rules", {})
+        # group: recognition params
+        grp_recog = QGroupBox("识别参数（动态/阈值/门控/滚动/自定义）")
+        form_r = QFormLayout()
+        form_r.addRow("dynamic_window_ms", self.spin_dynamic_window)
+        form_r.addRow("swipe_thresh_px", self.spin_swipe_thresh)
+        form_r.addRow("pinch_threshold_ratio", self.spin_pinch_thr)
+        form_r.addRow("two_finger_close_ratio", self.spin_close_thr)
+        form_r.addRow("click_guard_move_px", self.spin_click_guard_move)
+        form_r.addRow("click_hold_frames", self.spin_click_hold_frames)
+        form_r.addRow("click_max_speed_px_per_s", self.spin_click_max_speed)
+        form_r.addRow("scroll_gain", self.spin_scroll_gain)
+        form_r.addRow("scroll_deadzone_px", self.spin_scroll_dead)
+        form_r.addRow("scroll_max_step", self.spin_scroll_max)
+        form_r.addRow("custom_match_threshold", self.spin_custom_match)
+        grp_recog.setLayout(form_r)
 
-        def _get2(d, k, default):
-            if not isinstance(d, dict):
-                return default
-            return d.get(k, default)
-
-        use_dir = bool(fr.get("use_direction", True))
-        enh = bool(fr.get("single_finger_enhance", True))
-        others_thr = float(fr.get("others_fold_len_thr", 0.45))
-
-        # 每指默认阈值
-        idx_len = float(_get2(fr.get("index", {}), "len_thr", 0.55))
-        idx_cos = float(_get2(fr.get("index", {}), "cos_thr", 0.55))
-        mid_len = float(_get2(fr.get("middle", {}), "len_thr", 0.55))
-        mid_cos = float(_get2(fr.get("middle", {}), "cos_thr", 0.55))
-        ring_len = float(_get2(fr.get("ring", {}), "len_thr", 0.55))
-        ring_cos = float(_get2(fr.get("ring", {}), "cos_thr", 0.55))
-        pinky_len = float(_get2(fr.get("pinky", {}), "len_thr", 0.50))
-        pinky_cos = float(_get2(fr.get("pinky", {}), "cos_thr", 0.50))
-        thumb_len = float(_get2(fr.get("thumb", {}), "len_thr", 0.50))
-        thumb_cos = float(_get2(fr.get("thumb", {}), "cos_thr", 0.20))
-
-        self.chk_use_dir = QCheckBox("启用方向判定")
-        self.chk_use_dir.setChecked(use_dir)
-
-        self.chk_enhance = QCheckBox("单指增强（要求其它指收拢）")
-        self.chk_enhance.setChecked(enh)
-
-        self.spin_others_fold = QDoubleSpinBox()
-        self.spin_others_fold.setRange(0.10, 1.00)
-        self.spin_others_fold.setSingleStep(0.02)
-        self.spin_others_fold.setValue(others_thr)
-
-        def _mk_spin_len(val):
-            s = QDoubleSpinBox()
-            s.setRange(0.10, 1.20)
-            s.setSingleStep(0.02)
-            s.setDecimals(2)
-            s.setValue(float(val))
-            return s
-
-        def _mk_spin_cos(val):
-            s = QDoubleSpinBox()
-            s.setRange(-1.00, 1.00)
-            s.setSingleStep(0.05)
-            s.setDecimals(2)
-            s.setValue(float(val))
-            return s
-
-        self.spin_idx_len = _mk_spin_len(idx_len)
-        self.spin_idx_cos = _mk_spin_cos(idx_cos)
-        self.spin_mid_len = _mk_spin_len(mid_len)
-        self.spin_mid_cos = _mk_spin_cos(mid_cos)
-        self.spin_ring_len = _mk_spin_len(ring_len)
-        self.spin_ring_cos = _mk_spin_cos(ring_cos)
-        self.spin_pinky_len = _mk_spin_len(pinky_len)
-        self.spin_pinky_cos = _mk_spin_cos(pinky_cos)
-        self.spin_thumb_len = _mk_spin_len(thumb_len)
-        self.spin_thumb_cos = _mk_spin_cos(thumb_cos)
-
-        box = QGroupBox("识别参数：手指方向与单指增强（实时生效）")
-        form = QFormLayout()
-        form.addRow(self.chk_use_dir)
-        form.addRow(self.chk_enhance)
-        form.addRow("其它指收拢阈值 others_fold_len_thr", self.spin_others_fold)
-
-        form.addRow("食指 index len_thr", self.spin_idx_len)
-        form.addRow("食指 index cos_thr", self.spin_idx_cos)
-        form.addRow("中指 middle len_thr", self.spin_mid_len)
-        form.addRow("中指 middle cos_thr", self.spin_mid_cos)
-        form.addRow("无名指 ring len_thr", self.spin_ring_len)
-        form.addRow("无名指 ring cos_thr", self.spin_ring_cos)
-        form.addRow("小拇指 pinky len_thr", self.spin_pinky_len)
-        form.addRow("小拇指 pinky cos_thr", self.spin_pinky_cos)
-        form.addRow("拇指 thumb len_thr", self.spin_thumb_len)
-        form.addRow("拇指 thumb cos_thr", self.spin_thumb_cos)
-
-        box.setLayout(form)
+        # group: finger rules
+        grp_finger = QGroupBox("手指方向与单指增强（finger_rules，实时生效）")
+        form_f = QFormLayout()
+        form_f.addRow(self.chk_use_dir)
+        form_f.addRow(self.chk_enhance)
+        form_f.addRow("others_fold_len_thr", self.spin_others_fold)
+        form_f.addRow("index len_thr", self.spin_idx_len)
+        form_f.addRow("index cos_thr", self.spin_idx_cos)
+        form_f.addRow("middle len_thr", self.spin_mid_len)
+        form_f.addRow("middle cos_thr", self.spin_mid_cos)
+        form_f.addRow("ring len_thr", self.spin_ring_len)
+        form_f.addRow("ring cos_thr", self.spin_ring_cos)
+        form_f.addRow("pinky len_thr", self.spin_pinky_len)
+        form_f.addRow("pinky cos_thr", self.spin_pinky_cos)
+        form_f.addRow("thumb len_thr", self.spin_thumb_len)
+        form_f.addRow("thumb cos_thr", self.spin_thumb_cos)
+        grp_finger.setLayout(form_f)
 
         layout = QVBoxLayout()
         layout.addLayout(top)
         layout.addLayout(mouse_row)
-        layout.addWidget(box)          # <-- 现在放这里
+
+        row_params = QHBoxLayout()
+        row_params.addWidget(grp_recog, 2)
+        row_params.addWidget(grp_finger, 2)
+        layout.addLayout(row_params)
+
         layout.addWidget(self.preview)
         self.setLayout(layout)
 
-        # Components
+        # -------- Components --------
         self.osd = OSD()
         self.dispatcher = Dispatcher(self.cfg, self.state)
 
@@ -231,7 +264,6 @@ class MainWindow(QWidget):
         self.mouse_worker.start()
 
         self.tracker = BareHandTracker(min_det=0.6, min_track=0.6)
-
         glove_cfg = self.cfg.get("glove", {})
         self.glove = GloveTrackerC(
             hsv_lower=tuple(glove_cfg.get("hsv_lower", [20, 80, 80])),
@@ -240,22 +272,18 @@ class MainWindow(QWidget):
             dilate=int(glove_cfg.get("dilate", 2)),
             min_area=int(glove_cfg.get("min_area", 1500))
         )
-
         self.engine = GestureEngine(self.cfg)
 
-        # 自定义动态手势
         self.custom_mgr = CustomGestureManager(self.cfg)
         self._custom_track = TrackWindow(window_ms=600)
         self._recorder = None
 
         self._glove_dialog = None
 
-        # Camera device (可开关)
         self.cam = None
         self._latest_frame = None
         self._start_camera()
 
-        # Timers
         self.ui_fps = int(g.get("ui_fps", 24))
         self.infer_fps = int(g.get("infer_fps", 12))
         self._last_infer_ms = 0
@@ -265,13 +293,15 @@ class MainWindow(QWidget):
         self.timer.timeout.connect(self._tick)
         self.timer.start()
 
-        # Cache
         self._last_lm = None
         self._last_glove_feats = None
         self._last_raw_static = None
         self._last_scroll = None
 
-        # Events
+        # -------- sync config to UI now --------
+        self._sync_cfg_to_ui()
+
+        # -------- Signals --------
         self.preview_toggle.toggled.connect(self._on_preview_toggle)
         self.camera_device_toggle.toggled.connect(self._on_camera_device_toggle)
         self.mirror_toggle.toggled.connect(self._on_mirror_toggle)
@@ -284,6 +314,29 @@ class MainWindow(QWidget):
         self.spin_sens.valueChanged.connect(self._on_mouse_params)
         self.spin_dead.valueChanged.connect(self._on_mouse_params)
 
+        # recognition params sync
+        for w in [
+            self.spin_dynamic_window, self.spin_swipe_thresh,
+            self.spin_pinch_thr, self.spin_close_thr,
+            self.spin_click_guard_move, self.spin_click_hold_frames, self.spin_click_max_speed,
+            self.spin_scroll_gain, self.spin_scroll_dead, self.spin_scroll_max,
+            self.spin_custom_match
+        ]:
+            w.valueChanged.connect(self._on_general_params_changed)
+
+        # finger rules sync
+        self.chk_use_dir.toggled.connect(self._on_finger_rules_changed)
+        self.chk_enhance.toggled.connect(self._on_finger_rules_changed)
+        for w in [
+            self.spin_others_fold,
+            self.spin_idx_len, self.spin_idx_cos,
+            self.spin_mid_len, self.spin_mid_cos,
+            self.spin_ring_len, self.spin_ring_cos,
+            self.spin_pinky_len, self.spin_pinky_cos,
+            self.spin_thumb_len, self.spin_thumb_cos
+        ]:
+            w.valueChanged.connect(self._on_finger_rules_changed)
+
         self.btn_bindings.clicked.connect(self._open_binding_manager)
         self.btn_gestures.clicked.connect(self._open_gestures)
         self.btn_actions.clicked.connect(self._open_actions)
@@ -293,31 +346,119 @@ class MainWindow(QWidget):
         self.btn_load.clicked.connect(self._load_config_dialog)
         self.btn_save.clicked.connect(self._save_config)
 
-        self.chk_use_dir.toggled.connect(self._on_finger_rules_changed)
-        self.chk_enhance.toggled.connect(self._on_finger_rules_changed)
-        self.spin_others_fold.valueChanged.connect(self._on_finger_rules_changed)
+    # ---------------- config <-> ui sync ----------------
+    def _sync_cfg_to_ui(self):
+        g = self.cfg["general"]
 
-        self.spin_idx_len.valueChanged.connect(self._on_finger_rules_changed)
-        self.spin_idx_cos.valueChanged.connect(self._on_finger_rules_changed)
-        self.spin_mid_len.valueChanged.connect(self._on_finger_rules_changed)
-        self.spin_mid_cos.valueChanged.connect(self._on_finger_rules_changed)
-        self.spin_ring_len.valueChanged.connect(self._on_finger_rules_changed)
-        self.spin_ring_cos.valueChanged.connect(self._on_finger_rules_changed)
-        self.spin_pinky_len.valueChanged.connect(self._on_finger_rules_changed)
-        self.spin_pinky_cos.valueChanged.connect(self._on_finger_rules_changed)
-        self.spin_thumb_len.valueChanged.connect(self._on_finger_rules_changed)
-        self.spin_thumb_cos.valueChanged.connect(self._on_finger_rules_changed)
-    def closeEvent(self, e):
-        self._stop_camera()
-        self.mouse_worker.stop()
-        e.accept()
+        # toggles
+        self.preview_toggle.setChecked(bool(g.get("show_camera_preview", True)))
+        self.mirror_toggle.setChecked(bool(g.get("mirror_camera", True)))
+        self.osd_toggle.setChecked(bool(g.get("osd_enabled", True)))
+        self.recog_toggle.setChecked(bool(g.get("recognition_enabled", True)))
+        self.exec_toggle.setChecked(bool(g.get("execution_enabled", True)))
+        self.mouse_move_output_toggle.setChecked(bool(g.get("mouse_move_output_enabled", True)))
 
-    # ---------- Camera device control ----------
+        # mouse params
+        self.spin_smooth.setValue(float(g.get("mouse_smoothing", 0.35)))
+        self.spin_sens.setValue(float(g.get("mouse_sensitivity", 1.0)))
+        self.spin_dead.setValue(int(g.get("mouse_deadzone_px", 2)))
+
+        # general recog params
+        self.spin_dynamic_window.setValue(int(g.get("dynamic_window_ms", 450)))
+        self.spin_swipe_thresh.setValue(float(g.get("swipe_thresh_px", 80)))
+        self.spin_pinch_thr.setValue(float(g.get("pinch_threshold_ratio", 0.33)))
+        self.spin_close_thr.setValue(float(g.get("two_finger_close_ratio", 0.22)))
+
+        self.spin_click_guard_move.setValue(float(g.get("click_guard_move_px", 35)))
+        self.spin_click_hold_frames.setValue(int(g.get("click_hold_frames", 2)))
+        self.spin_click_max_speed.setValue(float(g.get("click_max_speed_px_per_s", 650)))
+
+        self.spin_scroll_gain.setValue(float(g.get("scroll_gain", 1.6)))
+        self.spin_scroll_dead.setValue(float(g.get("scroll_deadzone_px", 6)))
+        self.spin_scroll_max.setValue(float(g.get("scroll_max_step", 120)))
+
+        self.spin_custom_match.setValue(float(g.get("custom_match_threshold", 0.22)))
+
+        # finger rules
+        fr = g.setdefault("finger_rules", {})
+        self.chk_use_dir.setChecked(bool(fr.get("use_direction", True)))
+        self.chk_enhance.setChecked(bool(fr.get("single_finger_enhance", True)))
+        self.spin_others_fold.setValue(float(fr.get("others_fold_len_thr", 0.45)))
+
+        def g2(name, key, default):
+            d = fr.get(name, {}) if isinstance(fr.get(name, {}), dict) else {}
+            return float(d.get(key, default))
+
+        self.spin_idx_len.setValue(g2("index", "len_thr", 0.55))
+        self.spin_idx_cos.setValue(g2("index", "cos_thr", 0.55))
+        self.spin_mid_len.setValue(g2("middle", "len_thr", 0.55))
+        self.spin_mid_cos.setValue(g2("middle", "cos_thr", 0.55))
+        self.spin_ring_len.setValue(g2("ring", "len_thr", 0.55))
+        self.spin_ring_cos.setValue(g2("ring", "cos_thr", 0.55))
+        self.spin_pinky_len.setValue(g2("pinky", "len_thr", 0.50))
+        self.spin_pinky_cos.setValue(g2("pinky", "cos_thr", 0.50))
+        self.spin_thumb_len.setValue(g2("thumb", "len_thr", 0.50))
+        self.spin_thumb_cos.setValue(g2("thumb", "cos_thr", 0.20))
+
+        # apply to state too
+        self.state.camera_preview_enabled = self.preview_toggle.isChecked()
+        self.state.recognition_enabled = self.recog_toggle.isChecked()
+        self.state.execution_enabled = self.exec_toggle.isChecked()
+        self.state.mouse_move_output_enabled = self.mouse_move_output_toggle.isChecked()
+
+    def _sync_ui_to_cfg(self):
+        g = self.cfg["general"]
+
+        g["show_camera_preview"] = bool(self.preview_toggle.isChecked())
+        g["mirror_camera"] = bool(self.mirror_toggle.isChecked())
+        g["osd_enabled"] = bool(self.osd_toggle.isChecked())
+        g["recognition_enabled"] = bool(self.recog_toggle.isChecked())
+        g["execution_enabled"] = bool(self.exec_toggle.isChecked())
+        g["mouse_move_output_enabled"] = bool(self.mouse_move_output_toggle.isChecked())
+
+        g["mouse_smoothing"] = float(self.spin_smooth.value())
+        g["mouse_sensitivity"] = float(self.spin_sens.value())
+        g["mouse_deadzone_px"] = int(self.spin_dead.value())
+
+        g["dynamic_window_ms"] = int(self.spin_dynamic_window.value())
+        g["swipe_thresh_px"] = float(self.spin_swipe_thresh.value())
+        g["pinch_threshold_ratio"] = float(self.spin_pinch_thr.value())
+        g["two_finger_close_ratio"] = float(self.spin_close_thr.value())
+
+        g["click_guard_move_px"] = float(self.spin_click_guard_move.value())
+        g["click_hold_frames"] = int(self.spin_click_hold_frames.value())
+        g["click_max_speed_px_per_s"] = float(self.spin_click_max_speed.value())
+
+        g["scroll_gain"] = float(self.spin_scroll_gain.value())
+        g["scroll_deadzone_px"] = float(self.spin_scroll_dead.value())
+        g["scroll_max_step"] = float(self.spin_scroll_max.value())
+
+        g["custom_match_threshold"] = float(self.spin_custom_match.value())
+
+        fr = g.setdefault("finger_rules", {})
+        fr["use_direction"] = bool(self.chk_use_dir.isChecked())
+        fr["single_finger_enhance"] = bool(self.chk_enhance.isChecked())
+        fr["others_fold_len_thr"] = float(self.spin_others_fold.value())
+
+        def set2(name, len_spin, cos_spin):
+            fr.setdefault(name, {})
+            fr[name]["len_thr"] = float(len_spin.value())
+            fr[name]["cos_thr"] = float(cos_spin.value())
+
+        set2("index", self.spin_idx_len, self.spin_idx_cos)
+        set2("middle", self.spin_mid_len, self.spin_mid_cos)
+        set2("ring", self.spin_ring_len, self.spin_ring_cos)
+        set2("pinky", self.spin_pinky_len, self.spin_pinky_cos)
+        set2("thumb", self.spin_thumb_len, self.spin_thumb_cos)
+
+    # ---------------- camera device control ----------------
     def _start_camera(self):
         if self.cam is not None:
             return
         g = self.cfg["general"]
         self.state.camera_device_enabled = True
+        self.camera_device_toggle.setChecked(True)
+
         self.cam = CameraThread(
             index=int(g.get("camera_index", 0)),
             width=int(g.get("camera_width", 640)),
@@ -340,219 +481,22 @@ class MainWindow(QWidget):
         self.cam = None
         self._latest_frame = None
         self.state.camera_device_enabled = False
+        self.camera_device_toggle.setChecked(False)
         self.preview.clear()
         self.preview.setText("摄像头已关闭")
         self.preview.setStyleSheet("background:#111; color:#bbb;")
+
+    def closeEvent(self, e):
+        self._stop_camera()
+        self.mouse_worker.stop()
+        e.accept()
 
     def _on_camera_frame(self, frame):
         self._latest_frame = frame
         if self._glove_dialog is not None and self._glove_dialog.isVisible():
             self._glove_dialog.update_frame(frame)
 
-    # ---------- Custom gesture recorder ----------
-    def _open_recorder(self):
-        self._recorder = CustomGestureRecorder(self)
-        if self._recorder.exec() == self._recorder.Accepted:
-            gid, pts = self._recorder.get_result()
-            mode = self.mode_box.currentText()
-            ok = self.custom_mgr.add_template(gid, mode=mode, raw_points=pts)
-            if ok:
-                if not any(x.get("id") == gid for x in self.cfg.get("gesture_catalog", [])):
-                    self.cfg["gesture_catalog"].append({
-                        "id": gid,
-                        "title": f"自定义:{gid}",
-                        "type": "dynamic",
-                        "mode": mode,
-                        "description": "自定义动态模板手势",
-                        "default_use": "custom_bind",
-                        "notes": "",
-                        "enable_when": {},
-                        "params": {"cooldown_ms": 600}
-                    })
-                QMessageBox.information(self, "成功", f"已保存自定义手势：{gid}")
-            else:
-                QMessageBox.warning(self, "失败", "保存模板失败（轨迹不足或数据异常）")
-
-    # ---------- Tick ----------
-    def _tick(self):
-        # 摄像头设备关闭时，无帧
-        if self._latest_frame is None:
-            return
-
-        frame = self._latest_frame
-        h, w = frame.shape[:2]
-
-        now_ms = int(time.time() * 1000)
-        do_infer = self.state.recognition_enabled and self.state.camera_device_enabled and (
-            now_ms - self._last_infer_ms >= int(1000 / max(5, self.infer_fps))
-        )
-
-        event = None
-        raw_static = self._last_raw_static
-        scroll = self._last_scroll
-
-        mode = self.mode_box.currentText()
-
-        if do_infer:
-            self._last_infer_ms = now_ms
-
-            scale = float(self.cfg["general"].get("infer_scale", 0.6))
-            if 0.2 < scale < 1.0:
-                infer = cv2.resize(frame, (int(w * scale), int(h * scale)))
-            else:
-                infer = frame
-                scale = 1.0
-
-            if mode == "bare":
-                lm2 = self.tracker.process(infer)
-                if lm2 is not None and scale != 1.0:
-                    lm2 = lm2 / scale
-                self._last_lm = lm2
-                self._last_glove_feats = None
-
-                # 自定义轨迹采样 + 录制喂点
-                if lm2 is not None:
-                    self._custom_track.add(float(lm2[8][0]), float(lm2[8][1]))
-                    if self._recorder is not None and self._recorder.isVisible() and self._recorder.recording:
-                        self._recorder.add_point(float(lm2[8][0]), float(lm2[8][1]))
-
-                event, raw_static, scroll = self.engine.update_bare(lm2, self.state)
-
-                # 自定义匹配：仅在没有事件/滚动时尝试
-                if event is None and (scroll is None) and lm2 is not None:
-                    pts = np.array([(x, y) for _, x, y in self._custom_track.pts], dtype=np.float32) \
-                        if len(self._custom_track.pts) >= 12 else None
-                    if pts is not None:
-                        thr = float(self.cfg["general"].get("custom_match_threshold", 0.22))
-                        m = self.custom_mgr.match(mode="bare", raw_points=pts, threshold=thr)
-                        if m:
-                            gid, _dist = m
-                            event = gid
-
-            else:
-                feats = self.glove.process(infer)
-                if scale != 1.0 and feats.center is not None:
-                    feats.center = (int(feats.center[0] / scale), int(feats.center[1] / scale))
-                    feats.fingertips = [(int(x / scale), int(y / scale)) for x, y in feats.fingertips]
-                self._last_glove_feats = feats
-                self._last_lm = None
-
-                event, raw_static, scroll = self.engine.update_glove(feats, self.state)
-
-            self._last_raw_static = raw_static
-            self._last_scroll = scroll
-
-        # 鼠标移动输出：仍用 mouse_move_mode 控制
-        can_move = (
-            self.state.camera_device_enabled and self.state.recognition_enabled and self.state.execution_enabled and
-            self.state.mouse_move_output_enabled and self.state.mouse_move_mode
-        )
-        if can_move:
-            if mode == "bare" and self._last_lm is not None:
-                x, y = float(self._last_lm[8][0]), float(self._last_lm[8][1])
-                tgt = self.mouse.compute_target(x, y, frame_w=w, frame_h=h)
-                if tgt:
-                    self.mouse_worker.set_target(tgt[0], tgt[1])
-            elif mode == "glove" and self._last_glove_feats is not None and self._last_glove_feats.center is not None:
-                cx, cy = self._last_glove_feats.center
-                tgt = self.mouse.compute_target(float(cx), float(cy), frame_w=w, frame_h=h)
-                if tgt:
-                    self.mouse_worker.set_target(tgt[0], tgt[1])
-        else:
-            self.mouse_worker.invalidate()
-
-        # 滚动连续输出（不需要绑定也会输出？——不，仍需用户绑定动作才执行）
-        # 注意：你现在要求“默认绑定全部取消”，所以我们这里不直接调用 do_action。
-        # 我们改成：把 scroll 转换成两个“虚拟事件”，交由绑定系统决定是否执行。
-        if scroll and self.state.execution_enabled:
-            sv = int(scroll.get("sv", 0))
-            sh = int(scroll.get("sh", 0))
-            # 只有用户绑定了这些事件才会执行
-            if sv != 0:
-                self.dispatcher.dispatch("__SCROLL_V__", cooldown_ms=0, extra_payload={"amount": sv})
-            if sh != 0:
-                self.dispatcher.dispatch("__SCROLL_H__", cooldown_ms=0, extra_payload={"amount": sh})
-
-        # 离散事件 -> 绑定执行
-        if event:
-            cd = int(self._gesture_cooldown(event))
-            action = self.dispatcher.dispatch(event, cooldown_ms=cd)
-
-            # 若动作是 toggle_camera_device，则在这里执行设备开关（UI线程）
-            if action and action.get("type") == "toggle_camera_device":
-                self._toggle_camera_device()
-
-            if self.cfg["general"].get("osd_enabled", True) and self.osd_toggle.isChecked():
-                self._show_osd(mode, event, action)
-
-        # 预览渲染
-        if self.state.camera_preview_enabled:
-            vis = frame
-            if mode == "bare" and self._last_lm is not None:
-                p = self._last_lm[8].astype(int)
-                cv2.circle(vis, (p[0], p[1]), 6, (255, 0, 255), -1)
-            if mode == "glove" and self._last_glove_feats is not None:
-                feats = self._last_glove_feats
-                if feats.center:
-                    cv2.circle(vis, feats.center, 7, (255, 255, 0), -1)
-                for x, y in feats.fingertips:
-                    cv2.circle(vis, (x, y), 7, (0, 0, 255), -1)
-            self._show_frame(vis)
-        else:
-            if self.preview.pixmap() is not None:
-                self.preview.clear()
-                self.preview.setText("预览已关闭（识别仍在后台运行）")
-                self.preview.setStyleSheet("background:#111; color:#bbb;")
-
-    def _toggle_camera_device(self):
-        if self.state.camera_device_enabled:
-            self.camera_device_toggle.blockSignals(True)
-            self.camera_device_toggle.setChecked(False)
-            self.camera_device_toggle.blockSignals(False)
-            self._stop_camera()
-        else:
-            self.camera_device_toggle.blockSignals(True)
-            self.camera_device_toggle.setChecked(True)
-            self.camera_device_toggle.blockSignals(False)
-            self._start_camera()
-
-    def _gesture_cooldown(self, gid: str):
-        for it in self.cfg.get("gesture_catalog", []):
-            if it.get("id") == gid:
-                return it.get("params", {}).get("cooldown_ms", self.cfg["general"].get("cooldown_ms", 450))
-        return self.cfg["general"].get("cooldown_ms", 450)
-
-    def _show_osd(self, mode: str, gesture_id: str, action: dict):
-        if action is None:
-            act = "无动作"
-        elif action.get("type") == "blocked_execution":
-            act = "执行关闭"
-        else:
-            act = action.get("type", "动作")
-
-        text = (
-            f"模式:{mode} 识别:{'ON' if self.state.recognition_enabled else 'OFF'} "
-            f"执行:{'ON' if self.state.execution_enabled else 'OFF'} "
-            f"设备:{'ON' if self.state.camera_device_enabled else 'OFF'} "
-            f"预览:{'ON' if self.state.camera_preview_enabled else 'OFF'} "
-            f"移动输出:{'ON' if self.state.mouse_move_output_enabled else 'OFF'} "
-            f"移动模式:{'ON' if self.state.mouse_move_mode else 'OFF'}\n"
-            f"手势:{gesture_id}  动作:{act}"
-        )
-        self.osd.show_message(text, ms=900)
-
-    def _show_frame(self, frame_bgr):
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb.shape
-        qimg = QImage(rgb.data, w, h, w * ch, QImage.Format.Format_RGB888)
-        pix = QPixmap.fromImage(qimg)
-        self.preview.setPixmap(pix.scaled(
-            self.preview.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.FastTransformation
-        ))
-
-    # ---------- UI handlers ----------
+    # ---------------- UI handlers ----------------
     def _on_preview_toggle(self, v):
         self.state.camera_preview_enabled = bool(v)
         self.cfg["general"]["show_camera_preview"] = bool(v)
@@ -604,33 +548,14 @@ class MainWindow(QWidget):
         self.cfg["general"]["mouse_sensitivity"] = float(self.spin_sens.value())
         self.cfg["general"]["mouse_deadzone_px"] = int(self.spin_dead.value())
 
+    def _on_general_params_changed(self, *_):
+        # 实时写入 cfg，下一帧 engine 即可使用
+        self._sync_ui_to_cfg()
+
     def _on_finger_rules_changed(self, *_):
-        fr = self.cfg["general"].setdefault("finger_rules", {})
+        self._sync_ui_to_cfg()
 
-        fr["use_direction"] = bool(self.chk_use_dir.isChecked())
-        fr["single_finger_enhance"] = bool(self.chk_enhance.isChecked())
-        fr["others_fold_len_thr"] = float(self.spin_others_fold.value())
-
-        fr.setdefault("index", {})
-        fr["index"]["len_thr"] = float(self.spin_idx_len.value())
-        fr["index"]["cos_thr"] = float(self.spin_idx_cos.value())
-
-        fr.setdefault("middle", {})
-        fr["middle"]["len_thr"] = float(self.spin_mid_len.value())
-        fr["middle"]["cos_thr"] = float(self.spin_mid_cos.value())
-
-        fr.setdefault("ring", {})
-        fr["ring"]["len_thr"] = float(self.spin_ring_len.value())
-        fr["ring"]["cos_thr"] = float(self.spin_ring_cos.value())
-
-        fr.setdefault("pinky", {})
-        fr["pinky"]["len_thr"] = float(self.spin_pinky_len.value())
-        fr["pinky"]["cos_thr"] = float(self.spin_pinky_cos.value())
-
-        fr.setdefault("thumb", {})
-        fr["thumb"]["len_thr"] = float(self.spin_thumb_len.value())
-        fr["thumb"]["cos_thr"] = float(self.spin_thumb_cos.value())
-
+    # ---------------- dialogs ----------------
     def _open_binding_manager(self):
         dlg = BindingManager(self.cfg, parent=self)
         dlg.exec()
@@ -649,6 +574,30 @@ class MainWindow(QWidget):
         self._glove_dialog.show()
         self._glove_dialog.raise_()
 
+    def _open_recorder(self):
+        self._recorder = CustomGestureRecorder(self)
+        if self._recorder.exec() == self._recorder.Accepted:
+            gid, pts = self._recorder.get_result()
+            mode = self.mode_box.currentText()
+            ok = self.custom_mgr.add_template(gid, mode=mode, raw_points=pts)
+            if ok:
+                if not any(x.get("id") == gid for x in self.cfg.get("gesture_catalog", [])):
+                    self.cfg["gesture_catalog"].append({
+                        "id": gid,
+                        "title": f"自定义:{gid}",
+                        "type": "dynamic",
+                        "mode": mode,
+                        "description": "自定义动态模板手势",
+                        "default_use": "custom_bind",
+                        "notes": "",
+                        "enable_when": {},
+                        "params": {"cooldown_ms": 600}
+                    })
+                QMessageBox.information(self, "成功", f"已保存自定义手势：{gid}")
+            else:
+                QMessageBox.warning(self, "失败", "保存模板失败（轨迹不足或数据异常）")
+
+    # ---------------- load/save ----------------
     def _load_config_dialog(self):
         path, _ = QFileDialog.getOpenFileName(self, "加载配置", "", "JSON (*.json)")
         if not path:
@@ -662,13 +611,188 @@ class MainWindow(QWidget):
             glove_cfg = self.cfg.get("glove", {})
             self.glove.update_hsv(glove_cfg.get("hsv_lower", [20, 80, 80]), glove_cfg.get("hsv_upper", [40, 255, 255]))
 
+            # 重新同步 UI
+            self._sync_cfg_to_ui()
+
             QMessageBox.information(self, "加载成功", path)
         except Exception as ex:
             QMessageBox.critical(self, "加载失败", str(ex))
 
     def _save_config(self):
         try:
+            # 关键：先把 UI 当前值同步到 cfg，再保存
+            self._sync_ui_to_cfg()
+
             save_config(self.cfg, DEFAULT_CONFIG_PATH)
-            QMessageBox.information(self, "保存成功", DEFAULT_CONFIG_PATH)
+
+            # 显示绝对路径，便于确认写到哪里
+            abs_path = os.path.abspath(DEFAULT_CONFIG_PATH)
+            QMessageBox.information(self, "保存成功", abs_path)
         except Exception as ex:
             QMessageBox.critical(self, "保存失败", str(ex))
+
+    # ---------------- main tick ----------------
+    def _tick(self):
+        if self._latest_frame is None:
+            return
+
+        frame = self._latest_frame
+        h, w = frame.shape[:2]
+
+        now_ms = int(time.time() * 1000)
+        do_infer = self.state.recognition_enabled and self.state.camera_device_enabled and (
+            now_ms - self._last_infer_ms >= int(1000 / max(5, self.infer_fps))
+        )
+
+        event = None
+        raw_static = self._last_raw_static
+        scroll = self._last_scroll
+
+        mode = self.mode_box.currentText()
+
+        if do_infer:
+            self._last_infer_ms = now_ms
+
+            scale = float(self.cfg["general"].get("infer_scale", 0.6))
+            if 0.2 < scale < 1.0:
+                infer = cv2.resize(frame, (int(w * scale), int(h * scale)))
+            else:
+                infer = frame
+                scale = 1.0
+
+            if mode == "bare":
+                lm2 = self.tracker.process(infer)
+                if lm2 is not None and scale != 1.0:
+                    lm2 = lm2 / scale
+                self._last_lm = lm2
+                self._last_glove_feats = None
+
+                if lm2 is not None:
+                    self._custom_track.add(float(lm2[8][0]), float(lm2[8][1]))
+                    if self._recorder is not None and self._recorder.isVisible() and self._recorder.recording:
+                        self._recorder.add_point(float(lm2[8][0]), float(lm2[8][1]))
+
+                event, raw_static, scroll = self.engine.update_bare(lm2, self.state)
+
+                if event is None and (scroll is None) and lm2 is not None:
+                    pts = np.array([(x, y) for _, x, y in self._custom_track.pts], dtype=np.float32) \
+                        if len(self._custom_track.pts) >= 12 else None
+                    if pts is not None:
+                        thr = float(self.cfg["general"].get("custom_match_threshold", 0.22))
+                        m = self.custom_mgr.match(mode="bare", raw_points=pts, threshold=thr)
+                        if m:
+                            gid, _dist = m
+                            event = gid
+
+            else:
+                feats = self.glove.process(infer)
+                if scale != 1.0 and feats.center is not None:
+                    feats.center = (int(feats.center[0] / scale), int(feats.center[1] / scale))
+                    feats.fingertips = [(int(x / scale), int(y / scale)) for x, y in feats.fingertips]
+                self._last_glove_feats = feats
+                self._last_lm = None
+
+                event, raw_static, scroll = self.engine.update_glove(feats, self.state)
+
+            self._last_raw_static = raw_static
+            self._last_scroll = scroll
+
+        # 鼠标移动输出
+        can_move = (
+            self.state.camera_device_enabled and self.state.recognition_enabled and self.state.execution_enabled and
+            self.state.mouse_move_output_enabled and self.state.mouse_move_mode
+        )
+        if can_move:
+            if mode == "bare" and self._last_lm is not None:
+                x, y = float(self._last_lm[8][0]), float(self._last_lm[8][1])
+                tgt = self.mouse.compute_target(x, y, frame_w=w, frame_h=h)
+                if tgt:
+                    self.mouse_worker.set_target(tgt[0], tgt[1])
+            elif mode == "glove" and self._last_glove_feats is not None and self._last_glove_feats.center is not None:
+                cx, cy = self._last_glove_feats.center
+                tgt = self.mouse.compute_target(float(cx), float(cy), frame_w=w, frame_h=h)
+                if tgt:
+                    self.mouse_worker.set_target(tgt[0], tgt[1])
+        else:
+            self.mouse_worker.invalidate()
+
+        # 连续滚动：转为事件注入（默认绑定为空，用户绑定 __SCROLL_V__/__SCROLL_H__ 才执行）
+        if scroll and self.state.execution_enabled:
+            sv = int(scroll.get("sv", 0))
+            sh = int(scroll.get("sh", 0))
+            if sv != 0:
+                self.dispatcher.dispatch("__SCROLL_V__", cooldown_ms=0, extra_payload={"amount": sv})
+            if sh != 0:
+                self.dispatcher.dispatch("__SCROLL_H__", cooldown_ms=0, extra_payload={"amount": sh})
+
+        # 事件 -> 绑定
+        if event:
+            cd = int(self._gesture_cooldown(event))
+            action = self.dispatcher.dispatch(event, cooldown_ms=cd)
+
+            if action and action.get("type") == "toggle_camera_device":
+                self._toggle_camera_device()
+
+            if self.cfg["general"].get("osd_enabled", True) and self.osd_toggle.isChecked():
+                self._show_osd(mode, event, action)
+
+        # 预览渲染
+        if self.state.camera_preview_enabled:
+            vis = frame
+            if mode == "bare" and self._last_lm is not None:
+                p = self._last_lm[8].astype(int)
+                cv2.circle(vis, (p[0], p[1]), 6, (255, 0, 255), -1)
+            if mode == "glove" and self._last_glove_feats is not None:
+                feats = self._last_glove_feats
+                if feats.center:
+                    cv2.circle(vis, feats.center, 7, (255, 255, 0), -1)
+                for x, y in feats.fingertips:
+                    cv2.circle(vis, (x, y), 7, (0, 0, 255), -1)
+            self._show_frame(vis)
+        else:
+            if self.preview.pixmap() is not None:
+                self.preview.clear()
+                self.preview.setText("预览已关闭（识别仍在后台运行）")
+                self.preview.setStyleSheet("background:#111; color:#bbb;")
+
+    def _toggle_camera_device(self):
+        if self.state.camera_device_enabled:
+            self._stop_camera()
+        else:
+            self._start_camera()
+
+    def _gesture_cooldown(self, gid: str):
+        for it in self.cfg.get("gesture_catalog", []):
+            if it.get("id") == gid:
+                return it.get("params", {}).get("cooldown_ms", self.cfg["general"].get("cooldown_ms", 450))
+        return self.cfg["general"].get("cooldown_ms", 450)
+
+    def _show_osd(self, mode: str, gesture_id: str, action: dict):
+        if action is None:
+            act = "无动作"
+        elif action.get("type") == "blocked_execution":
+            act = "执行关闭"
+        else:
+            act = action.get("type", "动作")
+
+        text = (
+            f"模式:{mode} 识别:{'ON' if self.state.recognition_enabled else 'OFF'} "
+            f"执行:{'ON' if self.state.execution_enabled else 'OFF'} "
+            f"设备:{'ON' if self.state.camera_device_enabled else 'OFF'} "
+            f"预览:{'ON' if self.state.camera_preview_enabled else 'OFF'} "
+            f"移动输出:{'ON' if self.state.mouse_move_output_enabled else 'OFF'} "
+            f"移动模式:{'ON' if self.state.mouse_move_mode else 'OFF'}\n"
+            f"手势:{gesture_id}  动作:{act}"
+        )
+        self.osd.show_message(text, ms=900)
+
+    def _show_frame(self, frame_bgr):
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        qimg = QImage(rgb.data, w, h, w * ch, QImage.Format.Format_RGB888)
+        pix = QPixmap.fromImage(qimg)
+        self.preview.setPixmap(pix.scaled(
+            self.preview.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.FastTransformation
+        ))

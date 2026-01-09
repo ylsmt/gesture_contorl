@@ -4,6 +4,8 @@ from copy import deepcopy
 
 DEFAULT_CONFIG_PATH = os.path.join("config", "default_config.json")
 
+
+# 建议：DEFAULT_CONFIG 作为“出厂模板”，不要在运行时反复把它合并回用户配置的列表项里
 DEFAULT_CONFIG = {
   "general": {
     "camera_index": 0,
@@ -230,20 +232,55 @@ DEFAULT_CONFIG = {
   }
 }
 
-def deep_merge(dst: dict, src: dict) -> dict:
-    for k, v in src.items():
-        if isinstance(v, dict) and isinstance(dst.get(k), dict):
-            deep_merge(dst[k], v)
-        else:
-            dst[k] = v
-    return dst
+def _merge_general(default_general: dict, user_general: dict) -> dict:
+    """
+    只对 general 做“缺键补默认”，不删除用户已有键。
+    """
+    out = deepcopy(default_general)
+    if isinstance(user_general, dict):
+        out.update(user_general)
+    return out
 
 def load_config(path: str = DEFAULT_CONFIG_PATH) -> dict:
-    cfg = deepcopy(DEFAULT_CONFIG)
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            user = json.load(f)
-        deep_merge(cfg, user)
+    """
+    新规则：
+    - 首次不存在配置文件：写入并返回 DEFAULT_CONFIG（完整）
+    - 若存在：
+        * general：缺键补默认
+        * gesture_catalog / action_catalog / bindings / glove / custom_gestures：
+            - 用户有就完全用用户的（允许用户删除）
+            - 用户没有才回落默认
+    """
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_CONFIG, f, ensure_ascii=False, indent=2)
+        return deepcopy(DEFAULT_CONFIG)
+
+    with open(path, "r", encoding="utf-8") as f:
+        user = json.load(f)
+
+    cfg = {}
+
+    # general：向前兼容补默认
+    cfg["general"] = _merge_general(DEFAULT_CONFIG.get("general", {}), user.get("general", {}))
+
+    # 其它：用户有则完全采用用户的，用户无则用默认
+    for key in ["gesture_catalog", "action_catalog", "bindings", "glove", "custom_gestures"]:
+        if key in user:
+            cfg[key] = user[key]
+        else:
+            cfg[key] = deepcopy(DEFAULT_CONFIG.get(key))
+
+    # 最基本兜底：bindings 结构
+    cfg.setdefault("bindings", {})
+    cfg["bindings"].setdefault("global", {})
+    cfg["bindings"].setdefault("per_app", {})
+
+    cfg.setdefault("gesture_catalog", [])
+    cfg.setdefault("action_catalog", [])
+    cfg.setdefault("custom_gestures", [])
+
     return cfg
 
 def save_config(cfg: dict, path: str = DEFAULT_CONFIG_PATH):
