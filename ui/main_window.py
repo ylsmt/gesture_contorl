@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QMessageBox, QFileDialog, QDoubleSpinBox, QSpinBox,
     QGroupBox, QFormLayout
 )
+from PyQt6.QtWidgets import QDialog
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtCore import Qt, QTimer
 
@@ -24,6 +25,7 @@ from ui.gesture_catalog_editor import GestureCatalogEditor
 from ui.action_catalog_viewer import ActionCatalogViewer
 from ui.glove_calibration import GloveCalibrationDialog
 from ui.custom_gesture_recorder import CustomGestureRecorder
+from ui.debug_overlay import DebugOverlay
 
 from vision.camera import CameraThread
 from vision.bare_mediapipe import BareHandTracker
@@ -49,7 +51,7 @@ class MainWindow(QWidget):
             camera_device_enabled=True,
             mouse_move_output_enabled=bool(g.get("mouse_move_output_enabled", True)),
         )
-
+        self._last_debug = {"note": "debug_not_ready"}
         # -------- UI: preview --------
         self.preview = QLabel("预览")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -75,6 +77,8 @@ class MainWindow(QWidget):
         self.btn_glove_calib = QPushButton("手套校准…")
         self.btn_load = QPushButton("加载配置…")
         self.btn_save = QPushButton("保存配置")
+        self.debug_toggle = QCheckBox("调试")
+        self.debug_toggle.setChecked(False)
 
         # -------- UI: mouse mapping --------
         self.spin_smooth = QDoubleSpinBox()
@@ -195,6 +199,7 @@ class MainWindow(QWidget):
         top.addWidget(self.btn_glove_calib)
         top.addWidget(self.btn_load)
         top.addWidget(self.btn_save)
+        top.addWidget(self.debug_toggle)
 
         mouse_row = QHBoxLayout()
         mouse_row.addWidget(QLabel("平滑"))
@@ -275,7 +280,12 @@ class MainWindow(QWidget):
         self.engine = GestureEngine(self.cfg)
 
         self.custom_mgr = CustomGestureManager(self.cfg)
-        self._custom_track = TrackWindow(window_ms=600)
+        # self._custom_track = TrackWindow(window_ms=600)
+        self._custom_track = TrackWindow(window_ms=900)  # 从600调到900更稳
+        self._hand_present_count = 0
+        self._custom_last_fire_ms = 0
+        self._custom_match_interval_ms = 180
+        self._custom_last_match_ms = 0
         self._recorder = None
 
         self._glove_dialog = None
@@ -346,6 +356,8 @@ class MainWindow(QWidget):
         self.btn_load.clicked.connect(self._load_config_dialog)
         self.btn_save.clicked.connect(self._save_config)
 
+        self.debug_overlay = DebugOverlay()
+        self.debug_overlay.hide()
     # ---------------- config <-> ui sync ----------------
     def _sync_cfg_to_ui(self):
         g = self.cfg["general"]
@@ -576,7 +588,7 @@ class MainWindow(QWidget):
 
     def _open_recorder(self):
         self._recorder = CustomGestureRecorder(self)
-        if self._recorder.exec() == self._recorder.Accepted:
+        if self._recorder.exec() == QDialog.DialogCode.Accepted:
             gid, pts = self._recorder.get_result()
             mode = self.mode_box.currentText()
             ok = self.custom_mgr.add_template(gid, mode=mode, raw_points=pts)
@@ -633,6 +645,7 @@ class MainWindow(QWidget):
 
     # ---------------- main tick ----------------
     def _tick(self):
+        debug = getattr(self, "_last_debug", {"note": "debug_not_ready"})
         if self._latest_frame is None:
             return
 
@@ -668,21 +681,41 @@ class MainWindow(QWidget):
                 self._last_glove_feats = None
 
                 if lm2 is not None:
+                    self._hand_present_count += 1
                     self._custom_track.add(float(lm2[8][0]), float(lm2[8][1]))
                     if self._recorder is not None and self._recorder.isVisible() and self._recorder.recording:
                         self._recorder.add_point(float(lm2[8][0]), float(lm2[8][1]))
+                #（这保证丢手时不会拿到一堆垃圾轨迹去匹配）
+                else:
+                    self._hand_present_count = 0
+                    self._custom_track.reset()
+                event, raw_static, scroll, debug = self.engine.update_bare(lm2, self.state)
+                self._last_debug = debug
 
-                event, raw_static, scroll = self.engine.update_bare(lm2, self.state)
-
+                # 自定义匹配：只在没有事件/滚动时尝试
                 if event is None and (scroll is None) and lm2 is not None:
-                    pts = np.array([(x, y) for _, x, y in self._custom_track.pts], dtype=np.float32) \
-                        if len(self._custom_track.pts) >= 12 else None
-                    if pts is not None:
-                        thr = float(self.cfg["general"].get("custom_match_threshold", 0.22))
-                        m = self.custom_mgr.match(mode="bare", raw_points=pts, threshold=thr)
-                        if m:
-                            gid, _dist = m
-                            event = gid
+                    now = int(time.time() * 1000)
+
+                    # 手稳定存在一小段时间才匹配
+                    if self._hand_present_count >= 6:
+                        # 匹配限频
+                        if now - self._custom_last_match_ms >= self._custom_match_interval_ms:
+                            self._custom_last_match_ms = now
+
+                            # 触发冷却（防止反复触发）
+                            if now - self._custom_last_fire_ms >= 800:
+                                if len(self._custom_track.pts) >= 20:
+                                    pts = np.array([(x, y) for _, x, y in self._custom_track.pts], dtype=np.float32)
+
+                                    thr = float(self.cfg["general"].get("custom_match_threshold", 0.32))
+                                    m = self.custom_mgr.match(mode="bare", raw_points=pts, threshold=thr)
+
+                                    if m:
+                                        gid, dist = m
+                                        event = gid
+                                        self._custom_last_fire_ms = now
+                                        # 匹配到后清掉轨迹，避免立刻再次匹配到同一个
+                                        self._custom_track.reset()
 
             else:
                 feats = self.glove.process(infer)
@@ -692,7 +725,8 @@ class MainWindow(QWidget):
                 self._last_glove_feats = feats
                 self._last_lm = None
 
-                event, raw_static, scroll = self.engine.update_glove(feats, self.state)
+                event, raw_static, scroll, debug = self.engine.update_glove(feats, self.state)
+                self._last_debug = debug
 
             self._last_raw_static = raw_static
             self._last_scroll = scroll
@@ -755,6 +789,10 @@ class MainWindow(QWidget):
                 self.preview.setText("预览已关闭（识别仍在后台运行）")
                 self.preview.setStyleSheet("background:#111; color:#bbb;")
 
+        if self.debug_toggle.isChecked():
+            self.debug_overlay.update_text(self._format_debug(debug))
+        else:
+            self.debug_overlay.hide()
     def _toggle_camera_device(self):
         if self.state.camera_device_enabled:
             self._stop_camera()
@@ -796,3 +834,19 @@ class MainWindow(QWidget):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.FastTransformation
         ))
+    def _format_debug(self, d: dict) -> str:
+        if not d:
+            return "debug: (empty)"
+        # 只挑关键字段，避免太长
+        keys = [
+            "raw_static","confirmed_static","mouse_move_mode",
+            "pinch_thumb_index","pinch_thumb_middle","close_index_middle",
+            "three_pinch","moving","path_len","avg_speed",
+            "pinch_middle_hold","close_hold","scroll_active","dx","dy",
+            "blocked_reason","event"
+        ]
+        lines = []
+        for k in keys:
+            if k in d:
+                lines.append(f"{k:>18}: {d[k]}")
+        return "\n".join(lines)

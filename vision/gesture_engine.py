@@ -12,18 +12,9 @@ from vision.gesture_primitives import (
 
 class GestureEngine:
     """
-    - 静态：OPEN_PALM/FIST/THUMBS_UP/V_SIGN/INDEX_ONLY/THUMB_PINKY/OK_SIGN/UNKNOWN
-    - 复合（边沿触发一次）：
-        PINCH_RIGHT_CLICK：thumb+middle pinch（两指捏合）
-        INDEX_MIDDLE_DOUBLE_CLICK：index+middle close（两指并拢）
-      click门控：
-        * pinch/close 必须持续 N 帧（click_hold_frames）
-        * 平均速度必须低于阈值（click_max_speed_px_per_s）
-        * 移动明显（path_length>click_guard_move_px）时屏蔽 click
-    - 状态滚动：
-        PINCH_SCROLL：thumb+index pinch -> 位移比例滚动（sv/sh）
-    - 取消三指捏合：thumb-index pinch 与 thumb-middle pinch 同时成立时，屏蔽复合/滚动/双击
-    - 动态：SWIPE_*
+    这是“调试增强版”：
+    - 不改变你原有判定逻辑
+    - 额外返回 debug dict（包含关键数值与 blocked_reason）
     """
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -40,7 +31,7 @@ class GestureEngine:
         self._pinch_middle_down = False
         self._index_middle_close_down = False
 
-        # hold counters (持续N帧门控)
+        # hold counters
         self._pinch_middle_hold = 0
         self._index_middle_close_hold = 0
 
@@ -90,10 +81,6 @@ class GestureEngine:
         return "V_SIGN"
 
     def _avg_speed_px_per_s(self) -> float:
-        """
-        基于 track 内点计算平均速度（px/s）。
-        TrackWindow pts: (t_ms, x, y)
-        """
         pts = self.track.pts
         if len(pts) < 6:
             return 0.0
@@ -115,10 +102,24 @@ class GestureEngine:
         cooldown_ms = int(g.get("cooldown_ms", 450))
         swipe_thresh = float(g.get("swipe_thresh_px", 80))
 
-        # click门控参数
         click_guard_move_px = float(g.get("click_guard_move_px", 35))
         click_hold_frames = int(g.get("click_hold_frames", 2))
         click_max_speed = float(g.get("click_max_speed_px_per_s", 650))
+
+        debug = {
+            "note": "engine_debug",
+            "recognition_enabled": bool(getattr(state, "recognition_enabled", True)),
+            "mouse_move_mode": bool(getattr(state, "mouse_move_mode", False)),
+            "stable_frames": stable_frames,
+            "cooldown_ms": cooldown_ms,
+            "pinch_thr_ratio": pinch_thr,
+            "close_thr_ratio": close_thr,
+            "swipe_thresh_px": swipe_thresh,
+            "click_guard_move_px": click_guard_move_px,
+            "click_hold_frames": click_hold_frames,
+            "click_max_speed": click_max_speed,
+            "blocked_reason": ""
+        }
 
         if lm is None:
             self.scroll.stop()
@@ -128,51 +129,87 @@ class GestureEngine:
             self._index_middle_close_down = False
             self._pinch_middle_hold = 0
             self._index_middle_close_hold = 0
-            return None, None, None
+            debug["blocked_reason"] = "no_landmarks"
+            return None, None, None, debug
 
-        # track: index tip
+        # track update
         self.track.add(lm[TIP["index"]][0], lm[TIP["index"]][1])
 
         rules_cfg = self.cfg.get("general", {}).get("finger_rules", {})
         raw_static = classify_static(lm, pinch_thr, close_thr, rules_cfg=rules_cfg)
         confirmed_static = self._stable_confirm(raw_static, stable_frames)
 
-        # mouse_move_mode：仅用于鼠标移动输出
         mm_gid = self._mouse_mode_gesture_id()
         state.mouse_move_mode = (confirmed_static == mm_gid)
+
+        debug.update({
+            "raw_static": raw_static,
+            "confirmed_static": confirmed_static,
+            "mouse_move_mode_gesture": mm_gid,
+            "mouse_move_mode": bool(state.mouse_move_mode),
+            "stable_last": self._stable_last,
+            "stable_count": self._stable_count
+        })
 
         if not state.recognition_enabled:
             self.scroll.stop()
             self._unknown_count = 0
-            return None, raw_static, None
+            debug["blocked_reason"] = "recognition_disabled"
+            return None, raw_static, None, debug
 
-        # movement guard：移动明显时屏蔽 click
-        moving = (self.track.length() > click_guard_move_px)
-
-        # speed gate：速度过快时屏蔽 click
-        speed = self._avg_speed_px_per_s()
+        # gating signals
+        path_len = float(self.track.length())
+        moving = (path_len > click_guard_move_px)
+        speed = float(self._avg_speed_px_per_s())
         slow_enough = (speed <= click_max_speed)
 
-        # 三指捏合屏蔽
-        is_pinch_index = pinch_ratio(lm, TIP["thumb"], TIP["index"]) < pinch_thr
-        is_pinch_middle = pinch_ratio(lm, TIP["thumb"], TIP["middle"]) < pinch_thr
+        # pinch/close ratios
+        pr_index = float(pinch_ratio(lm, TIP["thumb"], TIP["index"]))
+        pr_middle = float(pinch_ratio(lm, TIP["thumb"], TIP["middle"]))
+        cr_im = float(close_ratio(lm, TIP["index"], TIP["middle"]))
+
+        is_pinch_index = pr_index < pinch_thr
+        is_pinch_middle = pr_middle < pinch_thr
         is_three_pinch = is_pinch_index and is_pinch_middle
 
+        dx, dy = self.track.delta()
+
+        debug.update({
+            "path_len": round(path_len, 2),
+            "moving": moving,
+            "avg_speed": round(speed, 2),
+            "slow_enough": slow_enough,
+            "pinch_thumb_index": round(pr_index, 3),
+            "pinch_thumb_middle": round(pr_middle, 3),
+            "close_index_middle": round(cr_im, 3),
+            "is_pinch_index": is_pinch_index,
+            "is_pinch_middle": is_pinch_middle,
+            "three_pinch": is_three_pinch,
+            "dx": round(dx, 1),
+            "dy": round(dy, 1),
+            "scroll_active": bool(self.scroll.active),
+            "pinch_middle_down": bool(self._pinch_middle_down),
+            "pinch_middle_hold": int(self._pinch_middle_hold),
+            "close_down": bool(self._index_middle_close_down),
+            "close_hold": int(self._index_middle_close_hold)
+        })
+
+        # 三指捏合屏蔽
         if is_three_pinch:
             self.scroll.stop()
-            # 直接把 hold/down 置为“按下”，避免松开瞬间边沿触发
             self._pinch_middle_down = True
             self._index_middle_close_down = True
             self._pinch_middle_hold = 0
             self._index_middle_close_hold = 0
+            debug["blocked_reason"] = "three_pinch_block"
         else:
-            # PINCH_SCROLL：thumb+index pinch 状态滚动（保留，不受 click 门控影响）
+            # PINCH_SCROLL
             if self._gesture_item("PINCH_SCROLL") and self._enable_when_ok("PINCH_SCROLL", state):
                 if is_pinch_index:
                     x, y = lm[TIP["index"]][0], lm[TIP["index"]][1]
                     if not self.scroll.active:
                         self.scroll.start(x, y)
-                    dx, dy = self.scroll.delta(x, y)
+                    dxs, dys = self.scroll.delta(x, y)
 
                     scroll_gain = float(g.get("scroll_gain", 1.6))
                     dead = float(g.get("scroll_deadzone_px", 6))
@@ -180,20 +217,27 @@ class GestureEngine:
 
                     sv = 0
                     sh = 0
-                    if abs(dy) >= dead:
-                        sv = int(max(-max_step, min(max_step, -dy * scroll_gain)))
-                    if abs(dx) >= dead:
-                        sh = int(max(-max_step, min(max_step, dx * scroll_gain)))
+                    if abs(dys) >= dead:
+                        sv = int(max(-max_step, min(max_step, -dys * scroll_gain)))
+                    if abs(dxs) >= dead:
+                        sh = int(max(-max_step, min(max_step, dxs * scroll_gain)))
 
-                    return None, raw_static, {"sv": sv, "sh": sh}
+                    debug["scroll_active"] = True
+                    debug["scroll_dx"] = round(dxs, 1)
+                    debug["scroll_dy"] = round(dys, 1)
+                    debug["scroll_sv"] = sv
+                    debug["scroll_sh"] = sh
+                    debug["blocked_reason"] = "scroll_active"
+                    return None, raw_static, {"sv": sv, "sh": sh}, debug
                 else:
                     self.scroll.stop()
+                    debug["scroll_active"] = False
 
-            # click类门控：必须“不在移动中”且“足够慢”
             click_allowed = (not moving) and slow_enough
+            debug["click_allowed"] = click_allowed
 
             if click_allowed:
-                # --- PINCH_RIGHT_CLICK：thumb+middle pinch（持续N帧 + 边沿触发） ---
+                # PINCH_RIGHT_CLICK
                 if self._gesture_item("PINCH_RIGHT_CLICK") and self._enable_when_ok("PINCH_RIGHT_CLICK", state):
                     if is_pinch_middle:
                         self._pinch_middle_hold += 1
@@ -202,18 +246,21 @@ class GestureEngine:
                                 cd = int(self._param("PINCH_RIGHT_CLICK", "cooldown_ms", 500))
                                 if self._cooldown_ok("PINCH_RIGHT_CLICK", cd):
                                     self._pinch_middle_down = True
-                                    return "PINCH_RIGHT_CLICK", raw_static, None
+                                    debug["event"] = "PINCH_RIGHT_CLICK"
+                                    debug["blocked_reason"] = ""
+                                    return "PINCH_RIGHT_CLICK", raw_static, None, debug
+                                else:
+                                    debug["blocked_reason"] = "cooldown_pinchr"
                             self._pinch_middle_down = True
+                        else:
+                            debug["blocked_reason"] = "hold_pinchr_not_enough"
                     else:
                         self._pinch_middle_down = False
                         self._pinch_middle_hold = 0
-                else:
-                    self._pinch_middle_down = False
-                    self._pinch_middle_hold = 0
 
-                # --- INDEX_MIDDLE_DOUBLE_CLICK：index+middle close（持续N帧 + 边沿触发） ---
+                # INDEX_MIDDLE_DOUBLE_CLICK
                 if self._gesture_item("INDEX_MIDDLE_DOUBLE_CLICK") and self._enable_when_ok("INDEX_MIDDLE_DOUBLE_CLICK", state):
-                    is_close = close_ratio(lm, TIP["index"], TIP["middle"]) < close_thr
+                    is_close = (cr_im < close_thr)
                     if is_close:
                         self._index_middle_close_hold += 1
                         if self._index_middle_close_hold >= click_hold_frames:
@@ -221,87 +268,135 @@ class GestureEngine:
                                 cd = int(self._param("INDEX_MIDDLE_DOUBLE_CLICK", "cooldown_ms", 700))
                                 if self._cooldown_ok("INDEX_MIDDLE_DOUBLE_CLICK", cd):
                                     self._index_middle_close_down = True
-                                    return "INDEX_MIDDLE_DOUBLE_CLICK", raw_static, None
+                                    debug["event"] = "INDEX_MIDDLE_DOUBLE_CLICK"
+                                    debug["blocked_reason"] = ""
+                                    return "INDEX_MIDDLE_DOUBLE_CLICK", raw_static, None, debug
+                                else:
+                                    debug["blocked_reason"] = "cooldown_double"
                             self._index_middle_close_down = True
+                        else:
+                            debug["blocked_reason"] = "hold_double_not_enough"
                     else:
                         self._index_middle_close_down = False
                         self._index_middle_close_hold = 0
-                else:
-                    self._index_middle_close_down = False
-                    self._index_middle_close_hold = 0
-
             else:
-                # 不允许 click：复位 click 状态，避免滑动/快速动作误触发
+                # 不允许 click：记录原因
+                if moving:
+                    debug["blocked_reason"] = "click_blocked_moving"
+                elif not slow_enough:
+                    debug["blocked_reason"] = "click_blocked_speed"
                 self._pinch_middle_down = False
                 self._index_middle_close_down = False
                 self._pinch_middle_hold = 0
                 self._index_middle_close_hold = 0
 
-        # 静态事件（可绑定）
+        # 静态事件
         if confirmed_static and self._gesture_item(confirmed_static) and self._enable_when_ok(confirmed_static, state):
             cd = int(self._param(confirmed_static, "cooldown_ms", cooldown_ms))
             if self._cooldown_ok(confirmed_static, cd):
-                return confirmed_static, raw_static, None
+                debug["event"] = confirmed_static
+                debug["blocked_reason"] = ""
+                return confirmed_static, raw_static, None, debug
+            else:
+                debug["blocked_reason"] = f"cooldown_static:{confirmed_static}"
 
-        # 动态 SWIPE_*
-        dx, dy = self.track.delta()
+        # SWIPE
         if abs(dx) > abs(dy) and abs(dx) > swipe_thresh:
             gid = "SWIPE_RIGHT" if dx > 0 else "SWIPE_LEFT"
-            if self._gesture_item(gid) and self._enable_when_ok(gid, state) and self._cooldown_ok(gid, cooldown_ms):
-                self.track.reset()
-                return gid, raw_static, None
+            if self._gesture_item(gid) and self._enable_when_ok(gid, state):
+                if self._cooldown_ok(gid, cooldown_ms):
+                    self.track.reset()
+                    debug["event"] = gid
+                    debug["blocked_reason"] = ""
+                    return gid, raw_static, None, debug
+                else:
+                    debug["blocked_reason"] = "cooldown_swipe"
 
         if abs(dy) > abs(dx) and abs(dy) > swipe_thresh:
             gid = "SWIPE_DOWN" if dy > 0 else "SWIPE_UP"
-            if self._gesture_item(gid) and self._enable_when_ok(gid, state) and self._cooldown_ok(gid, cooldown_ms):
-                self.track.reset()
-                return gid, raw_static, None
+            if self._gesture_item(gid) and self._enable_when_ok(gid, state):
+                if self._cooldown_ok(gid, cooldown_ms):
+                    self.track.reset()
+                    debug["event"] = gid
+                    debug["blocked_reason"] = ""
+                    return gid, raw_static, None, debug
+                else:
+                    debug["blocked_reason"] = "cooldown_swipe"
 
         # UNKNOWN
         if raw_static is None and self._gesture_item("UNKNOWN") and self._enable_when_ok("UNKNOWN", state):
             self._unknown_count += 1
             need = int(self._param("UNKNOWN", "stable_frames", 3))
+            debug["unknown_count"] = self._unknown_count
+            debug["unknown_need"] = need
             if self._unknown_count >= need:
                 cd = int(self._param("UNKNOWN", "cooldown_ms", 800))
                 if self._cooldown_ok("UNKNOWN", cd):
                     self._unknown_count = 0
-                    return "UNKNOWN", raw_static, None
+                    debug["event"] = "UNKNOWN"
+                    debug["blocked_reason"] = ""
+                    return "UNKNOWN", raw_static, None, debug
+                else:
+                    debug["blocked_reason"] = "cooldown_unknown"
         else:
             self._unknown_count = 0
 
-        return None, raw_static, None
+        # no event
+        if not debug["blocked_reason"]:
+            debug["blocked_reason"] = "no_event_matched"
+        return None, raw_static, None, debug
 
     def update_glove(self, feats, state):
+        # 同样返回 debug
         g = self.cfg["general"]
         self.track.set_window(int(g.get("dynamic_window_ms", 450)))
         cooldown_ms = int(g.get("cooldown_ms", 450))
         swipe_thresh = float(g.get("swipe_thresh_px", 80))
 
+        debug = {
+            "note": "glove_debug",
+            "recognition_enabled": bool(getattr(state, "recognition_enabled", True)),
+            "blocked_reason": ""
+        }
+
         if feats is None or feats.center is None:
             self.scroll.stop()
             self.track.reset()
-            return None, None, None
+            debug["blocked_reason"] = "no_glove_center"
+            return None, None, None, debug
 
         cx, cy = feats.center
         self.track.add(cx, cy)
-
         state.mouse_move_mode = (len(feats.fingertips) >= 2)
 
         if not state.recognition_enabled:
             self.scroll.stop()
-            return None, "GLOVE_TRACKING", None
+            debug["blocked_reason"] = "recognition_disabled"
+            return None, "GLOVE_TRACKING", None, debug
 
         dx, dy = self.track.delta()
+        debug.update({"dx": dx, "dy": dy, "fingertips": len(feats.fingertips)})
+
         if abs(dx) > abs(dy) and abs(dx) > swipe_thresh:
             gid = "SWIPE_RIGHT" if dx > 0 else "SWIPE_LEFT"
-            if self._gesture_item(gid) and self._enable_when_ok(gid, state) and self._cooldown_ok(gid, cooldown_ms):
-                self.track.reset()
-                return gid, "GLOVE_TRACKING", None
+            if self._gesture_item(gid) and self._enable_when_ok(gid, state):
+                if self._cooldown_ok(gid, cooldown_ms):
+                    self.track.reset()
+                    debug["event"] = gid
+                    debug["blocked_reason"] = ""
+                    return gid, "GLOVE_TRACKING", None, debug
+                debug["blocked_reason"] = "cooldown_swipe"
 
         if abs(dy) > abs(dx) and abs(dy) > swipe_thresh:
             gid = "SWIPE_DOWN" if dy > 0 else "SWIPE_UP"
-            if self._gesture_item(gid) and self._enable_when_ok(gid, state) and self._cooldown_ok(gid, cooldown_ms):
-                self.track.reset()
-                return gid, "GLOVE_TRACKING", None
+            if self._gesture_item(gid) and self._enable_when_ok(gid, state):
+                if self._cooldown_ok(gid, cooldown_ms):
+                    self.track.reset()
+                    debug["event"] = gid
+                    debug["blocked_reason"] = ""
+                    return gid, "GLOVE_TRACKING", None, debug
+                debug["blocked_reason"] = "cooldown_swipe"
 
-        return None, "GLOVE_TRACKING", None
+        if not debug["blocked_reason"]:
+            debug["blocked_reason"] = "no_event_matched"
+        return None, "GLOVE_TRACKING", None, debug
