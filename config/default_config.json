@@ -25,6 +25,8 @@
     "scroll_max_step": 120.0,
     "dynamic_window_ms": 550,
     "swipe_thresh_px": 120.0,
+    "swipe_dir_consistency": 0.8,
+    "swipe_reverse_protect_ms": 600,
     "custom_match_threshold": 0.32,
     "click_guard_move_px": 35.0,
     "click_hold_frames": 2,
@@ -211,7 +213,7 @@
       "notes": "",
       "enable_when": {},
       "params": {
-        "cooldown_ms": 450,
+        "cooldown_ms": 1500,
         "stable_frames": 2
       }
     },
@@ -366,6 +368,10 @@
       },
       "PINCH_RIGHT_CLICK": {
         "type": "click_right"
+      },
+      "THUMBS_UP": {
+        "type": "key",
+        "key": "esc"
       }
     },
     "per_app": {

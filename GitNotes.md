@@ -794,3 +794,83 @@ A) **训练版静态手势分类的完整落地**：
 B) 先做“调试OSD + OPEN_PALM严格化 + 门控可视化”，让你快速看清问题再决定是否训练。
 
 你希望先走哪条？如果你倾向训练，我建议先从 **方案1：关键点静态分类** 开始（收益最大、成本最低）。我可以按你的现有工程结构直接给你：`tools/collect_data.py`、`tools/train_static.py`、`vision/static_classifier.py`、以及 main_window 增加“采集/训练/加载模型”的入口。
+
+
+
+claude ops4.5 
+
+实际 **Gemini 2.5 Pro, 大型模型, 实验版 (2025年1月更新)**
+
+## Debug模式数据含义分析
+
+### 目前显示的关键字段及其含义
+
+| 字段名                                                       | 含义                                                         |
+| :----------------------------------------------------------- | :----------------------------------------------------------- |
+| `raw_static`                                                 | 原始静态手势识别结果（每帧的即时判定）                       |
+| `confirmed_static`                                           | 经过稳定确认后的手势（需要连续 `stable_frames` 帧相同才确认） |
+| `mouse_move_mode`                                            | 是否处于鼠标移动模式（如V_SIGN手势激活时）                   |
+| `pinch_thumb_index`                                          | 拇指与食指的捏合比率（越小表示越贴近，<`pinch_thr`触发）     |
+| `pinch_thumb_middle`                                         | 拇指与中指的捏合比率（用于右键点击判定）                     |
+| `close_index_middle`                                         | 食指与中指的贴合比率（用于双击判定）                         |
+| `three_pinch`                                                | 三指捏合检测（拇指同时捏食指和中指）                         |
+| `moving`                                                     | 手部是否在移动（路径长度 > `click_guard_move_px`）           |
+| `path_len`                                                   | 当前轨迹窗口内的路径长度（像素）                             |
+| ![img](vscode-file://vscode-app/d:/Programs/Antigravity/resources/app/extensions/theme-symbols/src/icons/files/python.svg)avg_speed | 平均移动速度（像素/秒）                                      |
+| `pinch_middle_hold`                                          | 拇中指捏合保持帧数（达到 `click_hold_frames` 才触发右键）    |
+| `close_hold`                                                 | 食指中指贴合保持帧数（达到阈值才触发双击）                   |
+| `scroll_active`                                              | 滚动模式是否激活                                             |
+| `dx` / `dy`                                                  | 当前轨迹窗口内的位移                                         |
+| `blocked_reason`                                             | **最重要** - 说明为什么当前没有触发事件                      |
+| `event`                                                      | 如果有事件触发，显示事件名称                                 |
+
+### `blocked_reason` 常见值说明
+
+| 值                       | 含义                       |
+| :----------------------- | :------------------------- |
+| `no_landmarks`           | 未检测到手部               |
+| `recognition_disabled`   | 识别功能被关闭             |
+| `three_pinch_block`      | 三指捏合屏蔽（防止误触）   |
+| `scroll_active`          | 正在滚动中，不触发其他事件 |
+| `cooldown_pinchr`        | 右键点击冷却中             |
+| `hold_pinchr_not_enough` | 拇中指捏合保持帧数不够     |
+| `cooldown_double`        | 双击冷却中                 |
+| `hold_double_not_enough` | 双击保持帧数不够           |
+| `click_blocked_moving`   | 手部移动太多，阻止点击     |
+| `click_blocked_speed`    | 移动速度太快，阻止点击     |
+| `cooldown_static:XX`     | 静态手势XX在冷却中         |
+| `cooldown_swipe`         | 滑动手势冷却中             |
+| `no_event_matched`       | 没有匹配到任何事件         |
+
+------
+
+## 优化方案 - 降低Debug刷新频率
+
+我来修改代码，添加一个可控的debug刷新间隔，这样数据不会变得太快。
+
+
+
+分析滑动手势误识别问题
+
+用户报告滑动手势问题：1）被cooldown_static:OPEN_PALM阻塞；2）收手时误识别为反向滑动。
+
+
+
+修复完成并已提交（dc04fc9）。
+
+**主要改动：**
+
+1. **滑动优先级提升** - 滑动判定移到静态手势之前，不再被OPEN_PALM冷却阻塞
+2. **方向一致性检测** - 轨迹方向一致性<70%时阻止滑动（过滤来回摆动）
+3. **反向保护机制** - 滑动后350ms内阻止反向滑动（防止收手误触发）
+
+**新增debug字段：**
+
+- `swipe_dir_consistency` - 轨迹方向一致性
+- `swipe_not_unidirectional` - 非单向阻止
+- `swipe_reverse_protected` - 反向保护阻止
+
+**可调参数**（在config中添加可自定义）：
+
+- `swipe_dir_consistency`: 默认0.70
+- `swipe_reverse_protect_ms`: 默认350ms
