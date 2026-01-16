@@ -861,6 +861,7 @@ class MainWindow(QWidget):
             "pinch_thumb_index","pinch_thumb_middle","close_index_middle",
             "three_pinch","moving","path_len","avg_speed",
             "pinch_middle_hold","close_hold","scroll_active","dx","dy",
+            "swipe_dir_consistency",  # 新增：滑动方向一致性
             "blocked_reason","event"
         ]
         lines = []
