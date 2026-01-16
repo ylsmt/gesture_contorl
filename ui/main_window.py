@@ -52,6 +52,8 @@ class MainWindow(QWidget):
             mouse_move_output_enabled=bool(g.get("mouse_move_output_enabled", True)),
         )
         self._last_debug = {"note": "debug_not_ready"}
+        self._last_debug_update_ms = 0
+        self._debug_update_interval_ms = 200  # debug刷新间隔，默认200ms（约5Hz）
         # -------- UI: preview --------
         self.preview = QLabel("预览")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -79,6 +81,12 @@ class MainWindow(QWidget):
         self.btn_save = QPushButton("保存配置")
         self.debug_toggle = QCheckBox("调试")
         self.debug_toggle.setChecked(False)
+        self.spin_debug_interval = QSpinBox()
+        self.spin_debug_interval.setRange(50, 1000)
+        self.spin_debug_interval.setSingleStep(50)
+        self.spin_debug_interval.setValue(200)
+        self.spin_debug_interval.setSuffix("ms")
+        self.spin_debug_interval.setToolTip("调试信息刷新间隔，越大越慢越容易看清")
 
         # -------- UI: mouse mapping --------
         self.spin_smooth = QDoubleSpinBox()
@@ -200,6 +208,7 @@ class MainWindow(QWidget):
         top.addWidget(self.btn_load)
         top.addWidget(self.btn_save)
         top.addWidget(self.debug_toggle)
+        top.addWidget(self.spin_debug_interval)
 
         mouse_row = QHBoxLayout()
         mouse_row.addWidget(QLabel("平滑"))
@@ -355,6 +364,8 @@ class MainWindow(QWidget):
 
         self.btn_load.clicked.connect(self._load_config_dialog)
         self.btn_save.clicked.connect(self._save_config)
+
+        self.spin_debug_interval.valueChanged.connect(self._on_debug_interval_changed)
 
         self.debug_overlay = DebugOverlay()
         self.debug_overlay.hide()
@@ -566,6 +577,9 @@ class MainWindow(QWidget):
 
     def _on_finger_rules_changed(self, *_):
         self._sync_ui_to_cfg()
+
+    def _on_debug_interval_changed(self, val):
+        self._debug_update_interval_ms = int(val)
 
     # ---------------- dialogs ----------------
     def _open_binding_manager(self):
@@ -789,8 +803,12 @@ class MainWindow(QWidget):
                 self.preview.setText("预览已关闭（识别仍在后台运行）")
                 self.preview.setStyleSheet("background:#111; color:#bbb;")
 
+        # 控制debug刷新频率，避免变化太快看不清
+        now_debug_ms = int(time.time() * 1000)
         if self.debug_toggle.isChecked():
-            self.debug_overlay.update_text(self._format_debug(debug))
+            if now_debug_ms - self._last_debug_update_ms >= self._debug_update_interval_ms:
+                self._last_debug_update_ms = now_debug_ms
+                self.debug_overlay.update_text(self._format_debug(debug))
         else:
             self.debug_overlay.hide()
     def _toggle_camera_device(self):
