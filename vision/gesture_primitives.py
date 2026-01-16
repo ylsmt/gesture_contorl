@@ -101,9 +101,16 @@ def classify_static(lm, pinch_thr_ratio=0.33, close_thr_ratio=0.22, rules_cfg=No
     thumb_ext, ext_index, ext_middle, ext_ring, ext_pinky, len_ratio = finger_states(lm, rules_cfg=rules_cfg)
     n_other = sum([ext_index, ext_middle, ext_ring, ext_pinky])
 
-    # OPEN_PALM
-    if n_other >= 3:
-        return "OPEN_PALM"
+    # OPEN_PALM (严格化：5指伸展 + 手掌朝上)
+    # 目的：作为隐式中立手势，普通张手不触发
+    if n_other == 4 and thumb_ext:
+        # 方向判定：手掌中心(c)应该在食指指尖(lm[8])的下方 (y坐标更大)
+        # 且保证拇指充分伸展（len_ratio > 0.65，默认0.5可能太松）
+        c = palm_center(lm)
+        if lm[TIP["index"]][1] < c[1]:
+            # 可选：进一步检查其他指尖是否也在掌心上方
+            if lm[TIP["pinky"]][1] < c[1]:
+                 return "OPEN_PALM"
 
     # FIST（更严格，避免吞掉 THUMBS_UP）
     if n_other == 0 and (not thumb_ext):
