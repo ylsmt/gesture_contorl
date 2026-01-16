@@ -65,10 +65,7 @@
       "default_use": "neutral",
       "notes": "默认中立手势，不绑定动作",
       "enable_when": {},
-      "params": {
-        "cooldown_ms": 800,
-        "stable_frames": 3
-      }
+      "params": {}
     },
     {
       "id": "THUMBS_UP",

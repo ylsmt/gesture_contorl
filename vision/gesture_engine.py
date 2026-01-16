@@ -35,6 +35,10 @@ class GestureEngine:
         self._pinch_middle_hold = 0
         self._index_middle_close_hold = 0
 
+        # 滑动反向保护
+        self._last_swipe_dir = None  # "left"/"right"/"up"/"down" 或 None
+        self._swipe_protect_until_ms = 0  # 保护期结束时间
+
     def _now_ms(self):
         return time.time() * 1000
 
@@ -92,6 +96,72 @@ class GestureEngine:
         dist = float(((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5)
         return dist / dt
 
+    def _check_swipe(self, dx, dy, swipe_thresh, cooldown_ms, raw_static, state, debug):
+        """
+        滑动手势判定，包含：
+        1. 方向一致性检测（过滤来回摆动的轨迹）
+        2. 反向保护机制（滑动后短时间内阻止反向滑动）
+        
+        返回：(gid, raw_static, None, debug) 或 None
+        """
+        now = self._now_ms()
+        g = self.cfg["general"]
+        
+        # 配置参数
+        dir_consistency_thr = float(g.get("swipe_dir_consistency", 0.70))  # 方向一致性阈值
+        reverse_protect_ms = int(g.get("swipe_reverse_protect_ms", 350))   # 反向保护时长
+        
+        # 判断主轴
+        is_horizontal = abs(dx) > abs(dy)
+        is_valid_swipe = (abs(dx) > swipe_thresh) if is_horizontal else (abs(dy) > swipe_thresh)
+        
+        if not is_valid_swipe:
+            return None
+        
+        # 确定方向
+        if is_horizontal:
+            direction = "right" if dx > 0 else "left"
+            axis = "x"
+            gid = "SWIPE_RIGHT" if dx > 0 else "SWIPE_LEFT"
+        else:
+            direction = "down" if dy > 0 else "up"
+            axis = "y"
+            gid = "SWIPE_DOWN" if dy > 0 else "SWIPE_UP"
+        
+        # 检查手势是否启用
+        if not (self._gesture_item(gid) and self._enable_when_ok(gid, state)):
+            return None
+        
+        # 方向一致性检测
+        dir_consistency = self.track.direction_consistency(axis)
+        debug["swipe_dir_consistency"] = round(dir_consistency, 2)
+        
+        if dir_consistency < dir_consistency_thr:
+            debug["blocked_reason"] = f"swipe_not_unidirectional:{round(dir_consistency, 2)}"
+            return None
+        
+        # 反向保护检测
+        opposite = {"left": "right", "right": "left", "up": "down", "down": "up"}
+        if self._last_swipe_dir is not None and now < self._swipe_protect_until_ms:
+            if direction == opposite.get(self._last_swipe_dir):
+                debug["blocked_reason"] = f"swipe_reverse_protected:{self._last_swipe_dir}"
+                return None
+        
+        # 冷却检测
+        if not self._cooldown_ok(gid, cooldown_ms):
+            debug["blocked_reason"] = "cooldown_swipe"
+            return None
+        
+        # 成功触发滑动
+        self.track.reset()
+        self._last_swipe_dir = direction
+        self._swipe_protect_until_ms = now + reverse_protect_ms
+        
+        debug["event"] = gid
+        debug["blocked_reason"] = ""
+        return gid, raw_static, None, debug
+
+
     def update_bare(self, lm: np.ndarray, state):
         g = self.cfg["general"]
         self.track.set_window(int(g.get("dynamic_window_ms", 450)))
@@ -129,6 +199,9 @@ class GestureEngine:
             self._index_middle_close_down = False
             self._pinch_middle_hold = 0
             self._index_middle_close_hold = 0
+            # 手部丢失时重置反向保护
+            self._last_swipe_dir = None
+            self._swipe_protect_until_ms = 0
             debug["blocked_reason"] = "no_landmarks"
             return None, None, None, debug
 
@@ -290,6 +363,11 @@ class GestureEngine:
                 self._pinch_middle_hold = 0
                 self._index_middle_close_hold = 0
 
+        # ========== 滑动判定（优先于静态手势，避免被静态冷却阻塞）==========
+        swipe_result = self._check_swipe(dx, dy, swipe_thresh, cooldown_ms, raw_static, state, debug)
+        if swipe_result is not None:
+            return swipe_result
+
         # 静态事件
         if confirmed_static and self._gesture_item(confirmed_static) and self._enable_when_ok(confirmed_static, state):
             cd = int(self._param(confirmed_static, "cooldown_ms", cooldown_ms))
@@ -299,29 +377,6 @@ class GestureEngine:
                 return confirmed_static, raw_static, None, debug
             else:
                 debug["blocked_reason"] = f"cooldown_static:{confirmed_static}"
-
-        # SWIPE
-        if abs(dx) > abs(dy) and abs(dx) > swipe_thresh:
-            gid = "SWIPE_RIGHT" if dx > 0 else "SWIPE_LEFT"
-            if self._gesture_item(gid) and self._enable_when_ok(gid, state):
-                if self._cooldown_ok(gid, cooldown_ms):
-                    self.track.reset()
-                    debug["event"] = gid
-                    debug["blocked_reason"] = ""
-                    return gid, raw_static, None, debug
-                else:
-                    debug["blocked_reason"] = "cooldown_swipe"
-
-        if abs(dy) > abs(dx) and abs(dy) > swipe_thresh:
-            gid = "SWIPE_DOWN" if dy > 0 else "SWIPE_UP"
-            if self._gesture_item(gid) and self._enable_when_ok(gid, state):
-                if self._cooldown_ok(gid, cooldown_ms):
-                    self.track.reset()
-                    debug["event"] = gid
-                    debug["blocked_reason"] = ""
-                    return gid, raw_static, None, debug
-                else:
-                    debug["blocked_reason"] = "cooldown_swipe"
 
         # UNKNOWN
         if raw_static is None and self._gesture_item("UNKNOWN") and self._enable_when_ok("UNKNOWN", state):
